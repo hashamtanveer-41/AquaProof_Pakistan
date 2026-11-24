@@ -27,7 +27,6 @@ import {
 import type { Farmer, Field, Page, Point, Region } from "@/domain/data";
 import { Brand, Card, Chip, Demo, Details, PageTitle } from "@/components/ui";
 import { FarmMap } from "@/features/map/FarmMap";
-import { MapProvider, useMapConfig } from "@/features/map/maptiler";
 import { RegisterModal, type Registration } from "@/features/registration/RegisterModal";
 import {
   archiveField,
@@ -75,15 +74,6 @@ const navigation = [
 ] as const;
 
 export default function App() {
-  return (
-    <MapProvider>
-      <Workspace />
-    </MapProvider>
-  );
-}
-
-function Workspace() {
-  const { config } = useMapConfig();
   const [page, setPage] = useState<Page>("map");
   const [region, setRegion] = useState<Region>("");
   const [fields, setFields] = useState<Field[]>([]);
@@ -119,11 +109,11 @@ function Workspace() {
       ? "Farmer Profile"
       : (navigation.flatMap((g) => [...g.items]).find((i) => i.id === page)?.label ?? "Farm Map");
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     const version = registryVersion.current;
-    loadRegistry()
+    loadRegistry(controller.signal)
       .then((data) => {
-        if (!active) return;
+        if (controller.signal.aborted) return;
         if (registryVersion.current !== version) {
           setRegistryAttempt((attempt) => attempt + 1);
           return;
@@ -134,7 +124,7 @@ function Workspace() {
         setRegistryStatus("");
       })
       .catch((error) => {
-        if (!active) return;
+        if (controller.signal.aborted) return;
         const unauthorized = error instanceof ApiError && error.status === 401;
         setOfficerLogin(unauthorized);
         setRegistryStatus(
@@ -142,7 +132,7 @@ function Workspace() {
         );
       });
     return () => {
-      active = false;
+      controller.abort();
     };
   }, [registryAttempt]);
 
@@ -230,7 +220,7 @@ function Workspace() {
     );
   };
   const saveBoundary = async () => {
-    if (!config?.tracing_authorized || !draft || draft.length < 3) return;
+    if (!draft || draft.length < 3) return;
     if (!editing || !mapField) {
       setRegistration({ points: draft, owner: draftOwner });
       return;
@@ -617,9 +607,7 @@ function Workspace() {
                   field={field}
                   open={openField}
                   go={go}
-                  canDraw={Boolean(config?.tracing_authorized)}
                   draw={() => {
-                    if (!config?.tracing_authorized) return;
                     go("map");
                     setDraftOwner(farmer.id);
                     setDraft([]);

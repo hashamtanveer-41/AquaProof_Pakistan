@@ -1,17 +1,19 @@
 from datetime import UTC, date, datetime, timedelta
 import json
 import os
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from psycopg.types.json import Jsonb
+from pydantic import Field
 
 from ..database import connect
 from ..assistant_access import queue_field_recheck
-from ..registry import field_by_id, require
+from ..registry import Input, field_by_id, require
 from . import weather
-from .crops import CROP_NAMES, crop_stage
-from .irrigation import IrrigationSettings, Scenario, canal_capacity, optimize
+from .crops import CROPS, CROP_NAMES, crop_stage, local_today
+from .irrigation import IrrigationSettings, NonNegative, Scenario, apply_decisions, canal_capacity, optimize
 
 router = APIRouter(prefix="/api/fields", tags=["weather and irrigation"])
 locations = APIRouter(prefix="/api", tags=["locations"])
@@ -20,6 +22,11 @@ locations = APIRouter(prefix="/api", tags=["locations"])
 @locations.get("/locations")
 def locate(q: str = Query(min_length=2, max_length=120)):
     return weather.geocode(q.strip())
+
+
+@locations.get("/crop-library")
+def crop_library():
+    return sorted(CROPS)
 
 
 def location(connection, field_id):
@@ -144,9 +151,16 @@ def save_settings(field_id: str, settings: IrrigationSettings, measured_at: date
 @router.post("/{field_id}/optimize")
 def simulate(field_id: str, scenario: Scenario):
     with connect() as connection:
-        field = field_by_id(connection, field_id)
-        point = location(connection, field_id)
-        settings = read_settings(connection, field_id)
+        field, settings, season, crop, point = simulation_inputs(connection, field_id)
+        decisions = read_decisions(connection, season["id"])
+    forecast_data = weather.forecast(weather.point_query(*weather_coordinates(point)))
+    result = simulate_inputs(field, settings, season, crop, point, forecast_data, scenario)
+    return with_decisions(result, field, settings, scenario, decisions)
+
+
+def simulation_inputs(connection, field_id):
+    field = field_by_id(connection, field_id)
+    settings = read_settings(connection, field_id)
     if not settings:
         raise HTTPException(409, "Save the field's irrigation settings before running a scenario")
     if not field["seasons"] or not field["seasons"][0]["planted"]:
@@ -155,7 +169,11 @@ def simulate(field_id: str, scenario: Scenario):
     crop = CROP_NAMES.get(season["crop"].casefold())
     if not crop:
         raise HTTPException(422, "No PI-Advisor crop calendar is available for this crop")
-    forecast_data = weather.forecast(weather.point_query(*weather_coordinates(point)))
+    point = {key: field[key] for key in ("latitude", "longitude")}
+    return field, settings, season, crop, point
+
+
+def simulate_inputs(field, settings, season, crop, point, forecast_data, scenario):
     daily = forecast_data["daily"]
     planted = date.fromisoformat(season["planted"])
     dates = [date.fromisoformat(row["date"]) for row in daily]
@@ -168,7 +186,87 @@ def simulate(field_id: str, scenario: Scenario):
         **optimize(daily, crop, planted, field["acres"] * 4046.8564224, settings, scenario),
         "weather_source": forecast_data["source"],
         "weather_retrieved_at": forecast_data["retrieved_at"],
+        "season_id": season["id"],
     }
+
+
+def read_decisions(connection, season_id):
+    rows = connection.execute(
+        """SELECT DISTINCT ON (irrigation_date) irrigation_date, revision, action, canal_m3, pump_m3, recorded_at
+           FROM irrigation_decisions WHERE season_id = %s AND irrigation_date >= %s
+           ORDER BY irrigation_date, revision DESC""", (season_id, local_today()),
+    ).fetchall()
+    return {row["irrigation_date"].isoformat(): row for row in rows}
+
+
+def with_decisions(result, field, settings, scenario, decisions):
+    days = result["plans"][result["recommended"]]["daily"]
+    reviewed, conflicts = apply_decisions(days, field["acres"] * 4046.8564224, settings, scenario, decisions)
+    return {**result, "decisions": {day["date"]: decisions[day["date"]] for day in days if day["date"] in decisions},
+            "reviewed_plan": reviewed, "decision_conflicts": conflicts}
+
+
+class IrrigationDecision(Input):
+    season_id: int = Field(gt=0)
+    revision: int = Field(ge=0, le=2147483646)
+    action: Literal["accept", "skip", "edit", "reopen"]
+    canal_m3: NonNegative | None = None
+    pump_m3: NonNegative | None = None
+
+
+def decision_amounts(decision, day, canal_limit, pump_limit):
+    volumes = (decision.canal_m3, decision.pump_m3)
+    if decision.action in ("skip", "reopen"):
+        if any(volume is not None for volume in volumes):
+            raise HTTPException(422, "Skip and Reopen do not take water volumes")
+        return 0, 0
+    if None in volumes:
+        raise HTTPException(422, "Enter the canal and tubewell water volumes")
+    if decision.action == "accept":
+        if volumes != (day["canal_m3"], day["pump_m3"]):
+            raise HTTPException(409, "The recommendation changed. Run the plan again before accepting it.")
+        # The displayed volumes are rounded. Use the physical limit if it is slightly lower.
+        return min(volumes[0], canal_limit), min(volumes[1], pump_limit)
+    if volumes[0] > canal_limit or volumes[1] > pump_limit:
+        raise HTTPException(422, "Volumes must fit the available canal turn and tubewell capacity")
+    return volumes
+
+
+@router.put("/{field_id}/irrigation-decisions/{irrigation_date}")
+def record_irrigation_decision(field_id: str, irrigation_date: date, decision: IrrigationDecision):
+    with connect() as connection:
+        point = location(connection, field_id)
+    forecast_data = weather.forecast(weather.point_query(*weather_coordinates(point)))
+    scenario = Scenario()
+    with connect() as connection:
+        require(connection.execute("SELECT id FROM fields WHERE id = %s AND archived_at IS NULL FOR UPDATE",
+                                   (field_id,)).fetchone(), "Field")
+        field, settings, season, crop, current_point = simulation_inputs(connection, field_id)
+        if point != current_point:
+            raise HTTPException(409, "The field location changed. Run the plan again.")
+        if decision.season_id != season["id"]:
+            raise HTTPException(409, "The crop season changed. Run the plan again.")
+        decisions = read_decisions(connection, season["id"])
+        day_key = irrigation_date.isoformat()
+        previous = decisions.get(day_key)
+        if (previous["revision"] if previous else 0) != decision.revision:
+            raise HTTPException(409, "A decision was already updated. Run the plan again to see it.")
+        result = simulate_inputs(field, settings, season, crop, point, forecast_data, scenario)
+        days = result["plans"][result["recommended"]]["daily"]
+        index = next((i for i, day in enumerate(days) if day["date"] == day_key and day["active_crop"]), None)
+        if index is None or irrigation_date < local_today():
+            raise HTTPException(422, "Choose a current or upcoming forecast day in the active crop season")
+        canal, pump = decision_amounts(decision, days[index], result["canal_capacity_m3"][index],
+                                       result["pump_capacity_m3"][index])
+        decisions[day_key] = connection.execute(
+            """INSERT INTO irrigation_decisions
+                 (season_id, irrigation_date, revision, action, canal_m3, pump_m3, weather_source, weather_retrieved_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING irrigation_date, revision, action, canal_m3, pump_m3, recorded_at""",
+            (season["id"], irrigation_date, decision.revision + 1, decision.action, canal, pump,
+             result["weather_source"], result["weather_retrieved_at"]),
+        ).fetchone()
+        return with_decisions(result, field, settings, scenario, decisions)
 
 
 @router.post("/{field_id}/intelligence")

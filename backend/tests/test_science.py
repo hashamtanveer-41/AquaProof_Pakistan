@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from unittest import TestCase
 
 from app.science.crops import crop_stage
-from app.science.irrigation import CanalTurn, IrrigationSettings, Scenario, Tubewell, optimize
+from app.science.irrigation import CanalTurn, IrrigationSettings, Scenario, Tubewell, apply_decisions, optimize
 
 
 class IrrigationTest(TestCase):
@@ -70,3 +70,30 @@ class IrrigationTest(TestCase):
         result = optimize(self.forecast, "Wheat", planted, 4046.8564224, self.settings, Scenario())
         for plan in result["plans"].values():
             self.assertTrue(all(day["canal_m3"] == day["pump_m3"] == 0 for day in plan["daily"][2:]))
+
+    def test_daily_decisions_lock_water_volumes_and_recalculate_depletion(self):
+        result = self.run_plan()
+        baseline = result["plans"][result["recommended"]]["daily"]
+        day = baseline[0]["date"]
+        skipped, conflicts = apply_decisions(baseline, 4046.8564224, self.settings, Scenario(), {
+            day: {"action": "skip", "canal_m3": 0, "pump_m3": 0},
+        })
+        self.assertFalse(conflicts)
+        self.assertEqual(skipped["daily"][0]["pump_m3"], 0)
+        self.assertGreater(skipped["daily"][0]["depletion_mm"], baseline[0]["depletion_mm"])
+        adjusted, conflicts = apply_decisions(baseline, 4046.8564224, self.settings, Scenario(), {
+            day: {"action": "edit", "canal_m3": 0, "pump_m3": 20},
+        })
+        self.assertFalse(conflicts)
+        self.assertEqual(adjusted["daily"][0]["pump_m3"], 20)
+        self.assertLess(adjusted["daily"][0]["depletion_mm"], skipped["daily"][0]["depletion_mm"])
+
+    def test_a_canal_delay_surfaces_a_conflict_with_an_accepted_turn(self):
+        result = self.run_plan()
+        baseline = result["plans"][result["recommended"]]["daily"]
+        day = baseline[2]["date"]
+        reviewed, conflicts = apply_decisions(baseline, 4046.8564224, self.settings, Scenario(canal_delay_days=2), {
+            day: {"action": "accept", "canal_m3": 150, "pump_m3": 0},
+        })
+        self.assertIsNone(reviewed)
+        self.assertEqual(conflicts, [day])

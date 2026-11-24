@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, 
 
 from .database import connect
 from .assistant_access import queue_field_recheck
-from .maps import require_tracing_authorization
 from .science.crops import estimated_stage, local_today
 
 router = APIRouter(prefix="/api", tags=["registry"])
@@ -181,8 +180,6 @@ def get_farmer(farmer_id: str):
 
 @router.post("/registrations", status_code=201)
 def register(registration: Registration):
-    if registration.field is not None:
-        require_tracing_authorization()
     try:
         with connect() as connection:
             farmer = (
@@ -220,7 +217,6 @@ def get_field(field_id: str):
 
 @router.patch("/fields/{field_id}")
 def update_boundary(field_id: str, boundary: Boundary):
-    require_tracing_authorization()
     try:
         with connect() as connection:
             require(connection.execute(

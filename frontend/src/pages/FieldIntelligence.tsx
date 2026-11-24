@@ -4,6 +4,12 @@ import { FieldSelect } from "@/components/FieldSelect";
 import type { Field, SelectField } from "@/domain/data";
 import { request } from "@/domain/registry";
 import { formatWeatherTime } from "@/domain/weather";
+import {
+  DailyWaterBalance,
+  show,
+  type DecisionInput,
+  type Result,
+} from "@/features/irrigation/DailyWaterBalance";
 type Settings = {
   measured_at?: string | null;
   taw_mm: number;
@@ -16,33 +22,8 @@ type Settings = {
   canal: { first_date: string; cycle_days: number; hours: number; flow_m3_hour: number } | null;
   tubewell: { flow_m3_hour: number; hours_per_day: number; pkr_hour: number } | null;
 };
-type Plan = {
-  cost_pkr: number;
-  stress_score: number;
-  daily: {
-    date: string;
-    stage: string;
-    crop_et_mm: number;
-    rain_mm: number;
-    canal_m3: number;
-    pump_m3: number;
-    depletion_mm: number;
-    stress_mm: number;
-    unmet_et_mm: number;
-  }[];
-};
-type Result = {
-  weather_source: string;
-  weather_retrieved_at: string;
-  recommended: string;
-  plans: Record<string, Plan>;
-  readily_available_mm: number;
-  crop: string;
-};
 type Scenario = { rain_factor: number; canal_delay_days: number; pump_pkr_hour: number | null };
 
-const show = (value?: number | null) =>
-  value == null ? "Unavailable" : value.toLocaleString("en-PK", { maximumFractionDigits: 2 });
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "The request failed.";
 
@@ -88,6 +69,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>();
   const [scenario, setScenario] = useState<Scenario>();
+  const [decisionStatus, setDecisionStatus] = useState("");
   const [explanation, setExplanation] = useState("");
   const [explanationStatus, setExplanationStatus] = useState("");
   const canal = field.source.toLowerCase().includes("canal");
@@ -173,6 +155,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     setResult(undefined);
     setExplanation("");
     setExplanationStatus("");
+    setDecisionStatus("");
     setScenarioStatus("Running scenario…");
     try {
       setResult(await request<Result>(`${path}/simulate`, "POST", input));
@@ -180,6 +163,22 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
       setScenarioStatus("");
     } catch (error) {
       setScenarioStatus(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decide(day: string, input: DecisionInput) {
+    setBusy(true);
+    setDecisionStatus("Recalculating the plan…");
+    setExplanation("");
+    try {
+      setResult(await request<Result>(`${path}/irrigation-decisions/${day}`, "PUT", input));
+      setDecisionStatus("Decision saved and water balance recalculated.");
+      return true;
+    } catch (error) {
+      setDecisionStatus(errorText(error));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -342,9 +341,13 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
         )}
       </Card>
       <Card
-        title="What-if scenario"
+        title="PI-Advisor irrigation planner"
         subtitle={`${field.crop} · ${field.stage} · Uses available forecast days`}
       >
+        <p>
+          Run the baseline with the values below, or vary rainfall, canal timing, and pumping cost
+          to compare outcomes.
+        </p>
         <form className="form-grid" onSubmit={run}>
           <Numeric name="rain" label="Forecast rainfall multiplier" value={1} max={3} />
           <Numeric name="delay" label="Canal delay (days)" value={0} max={60} step={1} />
@@ -381,36 +384,18 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
               </tbody>
             </table>
           </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Crop stage</th>
-                  <th>Crop ET (mm)</th>
-                  <th>Rain (mm)</th>
-                  <th>Canal (m³)</th>
-                  <th>Tubewell (m³)</th>
-                  <th>Depletion (mm)</th>
-                  <th>Unmet ET (mm)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.plans[result.recommended].daily.map((day) => (
-                  <tr key={day.date}>
-                    <td>{day.date}</td>
-                    <td>{day.stage}</td>
-                    <td>{show(day.crop_et_mm)}</td>
-                    <td>{show(day.rain_mm)}</td>
-                    <td>{show(day.canal_m3)}</td>
-                    <td>{show(day.pump_m3)}</td>
-                    <td>{show(day.depletion_mm)}</td>
-                    <td>{show(day.unmet_et_mm)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DailyWaterBalance
+            result={result}
+            busy={busy}
+            canReview={Boolean(
+              scenario &&
+              scenario.rain_factor === 1 &&
+              scenario.canal_delay_days === 0 &&
+              scenario.pump_pkr_hour == null,
+            )}
+            onDecision={decide}
+          />
+          {decisionStatus && <p role="status">{decisionStatus}</p>}
           <Button onClick={() => void explain()} disabled={busy}>
             Explain this plan with AI
           </Button>
@@ -440,7 +425,7 @@ export default function FieldIntelligence({
         title="Irrigation Intelligence"
         description={
           field
-            ? `Field-level data for ${field.name}.`
+            ? `PI-Advisor water balance and irrigation decisions for ${field.name}.`
             : "Register a field to use its location and crop records."
         }
       >

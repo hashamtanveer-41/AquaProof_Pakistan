@@ -64,12 +64,15 @@ def crop_demand(forecast, crop, planted, settings, rain_factor):
         )
         kc_max = max(1.2, kcb + 0.05)
         evaporation = day["eto_mm"] * min(reduction * (kc_max - kcb), (1 - cover) * kc_max)
+        transpiration = kcb * day["eto_mm"]
         surface = min(settings.surface_taw_mm, max(0, surface - rain) + evaporation)
         daily.append({
             "date": day["date"],
             "rain_mm": rain,
             "eto_mm": day["eto_mm"],
-            "crop_et_mm": kcb * day["eto_mm"] + evaporation,
+            "crop_et_mm": transpiration + evaporation,
+            "potential_transpiration_mm": transpiration,
+            "soil_evaporation_mm": evaporation,
             "stage": stage,
             "active_crop": stage not in ("Pre-planting", "Beyond modeled season"),
         })
@@ -85,7 +88,7 @@ def canal_capacity(day, settings, scenario):
     return canal.flow_m3_hour * canal.hours if offset >= 0 and offset % canal.cycle_days == 0 else 0
 
 
-def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, price):
+def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, price, fixed=None):
     count = len(days)
     # Each day allocates net depth from canal and pump and tracks the root zone balance.
     canal, pump, deficit, drain, stress, unmet, dry = np.arange(count * 7).reshape(7, count)
@@ -105,8 +108,8 @@ def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, pric
 
     raw = settings.taw_mm * settings.allowable_depletion
     bounds = (
-        [(0, capacity / net_mm_to_volume if day["active_crop"] else 0)
-         for capacities in (bounds_canal, bounds_pump)
+        [daily_bound(day, capacity, fixed, source, net_mm_to_volume)
+         for source, capacities in enumerate((bounds_canal, bounds_pump))
          for day, capacity in zip(days, capacities, strict=True)]
         + [(0, settings.taw_mm)] * count + [(0, None)] * (2 * count)
         + [(0, day["crop_et_mm"]) for day in days]
@@ -155,15 +158,46 @@ def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, pric
     }
 
 
-def optimize(forecast, crop, planted, area_m2, settings, scenario):
-    days = crop_demand(forecast, crop, planted, settings, scenario.rain_factor)
+def daily_bound(day, capacity, fixed, source, net_mm_to_volume):
+    if fixed and day["date"] in fixed:
+        depth = fixed[day["date"]][source] / net_mm_to_volume
+        return depth, depth
+    return 0, capacity / net_mm_to_volume if day["active_crop"] else 0
+
+
+def plan_supply(days, settings, scenario):
     canal = [canal_capacity(date.fromisoformat(day["date"]), settings, scenario) for day in days]
     pump = settings.tubewell
     pump_capacity = [pump.flow_m3_hour * pump.hours_per_day if pump else 0] * len(days)
-    zeros = [0] * len(days)
     price = 0 if not pump else (
         pump.pkr_hour if scenario.pump_pkr_hour is None else scenario.pump_pkr_hour
     ) / pump.flow_m3_hour
+    return canal, pump_capacity, price
+
+
+def apply_decisions(days, area_m2, settings, scenario, decisions):
+    canal, pump, price = plan_supply(days, settings, scenario)
+    fixed = {}
+    conflicts = []
+    for day, canal_limit, pump_limit in zip(days, canal, pump, strict=True):
+        decision = decisions.get(day["date"])
+        if not decision or decision["action"] == "reopen":
+            continue
+        volumes = decision["canal_m3"], decision["pump_m3"]
+        if (not day["active_crop"] and any(volumes)) or volumes[0] > canal_limit or volumes[1] > pump_limit:
+            conflicts.append(day["date"])
+        else:
+            fixed[day["date"]] = volumes
+    if conflicts or not fixed:
+        return None, conflicts
+    return solve_plan(days, canal, pump, settings, area_m2 / 1000 / settings.efficiency, price, fixed), []
+
+
+def optimize(forecast, crop, planted, area_m2, settings, scenario):
+    days = crop_demand(forecast, crop, planted, settings, scenario.rain_factor)
+    canal, pump_capacity, price = plan_supply(days, settings, scenario)
+    pump = settings.tubewell
+    zeros = [0] * len(days)
     net_mm_to_volume = area_m2 / 1000 / settings.efficiency
     plans = {}
     for label, available_canal, available_pump in [
@@ -186,6 +220,7 @@ def optimize(forecast, crop, planted, area_m2, settings, scenario):
         "recommended": best,
         "plans": plans,
         "canal_capacity_m3": canal,
+        "pump_capacity_m3": pump_capacity,
         "readily_available_mm": settings.taw_mm * settings.allowable_depletion,
         "crop": crop,
         "planted": planted.isoformat(),

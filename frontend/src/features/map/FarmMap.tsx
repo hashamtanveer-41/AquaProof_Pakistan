@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -20,18 +20,27 @@ import {
 } from "lucide-react";
 import { acres, type Farmer, type Field, type Point, type Region } from "@/domain/data";
 import { Button, Chip, Empty, PageTitle, Stat } from "@/components/ui";
-import { polygon } from "@/domain/registry";
+import { polygon, request } from "@/domain/registry";
+import { satelliteSource, type Basemap } from "./basemap";
 import { GeoCanvas } from "./GeoCanvas";
 import {
-  mapStyles,
-  reverseLocation,
-  searchPakistan,
-  useMapConfig,
+  areaUnits,
+  irrigationStyle,
+  irrigationStyles,
+  previewArea,
   validMapPoint,
-  type Basemap,
-  type Place,
-} from "./maptiler";
-import { areaUnits, irrigationStyle, irrigationStyles, previewArea, validParcel } from "./parcel";
+  validParcel,
+} from "./parcel";
+
+type Place = {
+  id: number;
+  name: string;
+  region?: string;
+  country?: string;
+  country_code?: string;
+  latitude: number;
+  longitude: number;
+};
 
 function coordinatePair(value: string): Point | undefined {
   const match = /^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/.exec(value);
@@ -95,12 +104,12 @@ export function FarmMap({
   notify: (message: string) => void;
   registryAvailable: boolean;
 }) {
-  const { config } = useMapConfig();
-  const [basemap, setBasemap] = useState<Basemap>("satellite");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [panel, setPanel] = useState(true);
   const [full, setFull] = useState(false);
+  const [basemap, setBasemap] = useState<Basemap>(satelliteSource ? "satellite" : "street");
+  const [imageryError, setImageryError] = useState("");
   const [ready, setReady] = useState(false);
   const [resetView, setResetView] = useState(0);
   const [target, setTarget] = useState<Point>();
@@ -113,13 +122,28 @@ export function FarmMap({
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => () => placeRequest.current?.abort(), []);
+  useEffect(() => {
+    if (!full) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const exit = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) setFull(false);
+    };
+    window.addEventListener("keydown", exit);
+    return () => {
+      window.removeEventListener("keydown", exit);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [full]);
 
-  const visible = fields.filter((item) => !region || item.region === region);
+  const visible = useMemo(
+    () => (region ? fields.filter((item) => item.region === region) : fields),
+    [fields, region],
+  );
   const owner = farmers.find((person) => person.id === field?.farmerId);
-  const total = visible.reduce((sum, item) => sum + item.acres, 0);
+  const total = useMemo(() => visible.reduce((sum, item) => sum + item.acres, 0), [visible]);
   const q = query.trim();
-  const tracing = Boolean(config?.tracing_authorized);
-  const canDraw = tracing && ready && registryAvailable;
+  const canDraw = ready && registryAvailable;
   const currentArea = previewArea(preview.length ? preview : (draft ?? []));
   const canSave = Boolean(canDraw && draft && validParcel(draft));
   const matches = q
@@ -157,45 +181,51 @@ export function FarmMap({
   async function findPlace() {
     if (q.length < 2 || draft) return;
     resetSearch();
-    const request = new AbortController();
-    placeRequest.current = request;
     const point = coordinatePair(q);
     if (point && !validMapPoint(point)) {
       setPlaceStatus("Coordinates are outside the map’s latitude or longitude range.");
       return;
     }
-    if (point) centerOn(point, q);
-    if (!config?.api_key) {
-      if (!point) setPlaceStatus("MapTiler location search is unavailable.");
+    if (point) {
+      centerOn(point, q);
       return;
     }
+    const controller = new AbortController();
+    placeRequest.current = controller;
     try {
-      if (point) {
-        const label = await reverseLocation(config.api_key, point, request.signal);
-        if (!request.signal.aborted && label) setLocationLabel(label);
-      } else {
-        setPlaceStatus("Searching places…");
-        const results = await searchPakistan(config.api_key, q, request.signal);
-        if (request.signal.aborted) return;
-        setPlaces(results);
-        setPlaceStatus(
-          results.length
-            ? ""
-            : "No places found in Pakistan. Try a nearby town or enter coordinates.",
-        );
-      }
+      setPlaceStatus("Searching places…");
+      const results = await request<Place[]>(
+        `/locations?q=${encodeURIComponent(q)}`,
+        "GET",
+        undefined,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      const usable = results.filter(({ longitude, latitude }) =>
+        validMapPoint([longitude, latitude]),
+      );
+      setPlaces(
+        usable.sort(
+          (left, right) => Number(right.country_code === "PK") - Number(left.country_code === "PK"),
+        ),
+      );
+      setPlaceStatus(
+        usable.length ? "" : "No places found. Try a nearby town or enter coordinates.",
+      );
     } catch (error) {
-      if (request.signal.aborted) return;
-      const message = error instanceof Error ? error.message : "Location lookup failed.";
-      if (point) notify(message);
-      else setPlaceStatus(message);
+      if (controller.signal.aborted) return;
+      setPlaceStatus(error instanceof Error ? error.message : "Location lookup failed.");
     }
   }
 
   function startDraft(points: Point[] = []) {
     if (!canDraw) return;
     setPreview([]);
-    setTarget(undefined);
+    resetSearch();
+    if (points.length) {
+      setTarget(undefined);
+      setLocationLabel("");
+    }
     setEditing(points.length > 0);
     setDraft(points);
     setPanel(true);
@@ -244,14 +274,6 @@ export function FarmMap({
           {draft ? "Cancel Drawing" : "Draw Boundary"}
         </Button>
       </PageTitle>
-      {config && !tracing && (
-        <div className="notice map-tracing-notice">
-          <CircleHelp size={16} />
-          <span>
-            Boundary tracing is disabled pending imagery digitization and storage authorization.
-          </span>
-        </div>
-      )}
       <div className="stats-grid map-stats">
         <Stat
           icon={<Layers size={21} />}
@@ -323,8 +345,8 @@ export function FarmMap({
                 onKeyDown={(event) => {
                   if (event.key === "Escape") setSearching(false);
                 }}
-                placeholder="Search Pakistan or latitude, longitude…"
-                aria-label="Search Pakistani places, registered fields or coordinates"
+                placeholder="Search places, fields, or latitude, longitude…"
+                aria-label="Search places, registered fields or coordinates"
               />
               {query && (
                 <button
@@ -363,7 +385,7 @@ export function FarmMap({
                   onClick={() => void findPlace()}
                   disabled={placeStatus === "Searching places…"}
                 >
-                  <Search size={15} /> Search MapTiler
+                  <Search size={15} /> Search places or coordinates
                 </button>
                 {placeStatus && <p role="status">{placeStatus}</p>}
                 {places.map((place) => (
@@ -372,31 +394,51 @@ export function FarmMap({
                     key={place.id}
                     onClick={() => {
                       setQuery(place.name);
-                      centerOn(place.point, place.name);
+                      centerOn([place.longitude, place.latitude], place.name);
                     }}
                   >
-                    <MapPin size={15} /> {place.name}
+                    <MapPin size={15} />
+                    <span>
+                      {place.name}
+                      <small>{[place.region, place.country].filter(Boolean).join(", ")}</small>
+                    </span>
                   </button>
                 ))}
-                <p>Location search © MapTiler</p>
               </div>
             )}
           </div>
           <div className="map-actions">
+            {full && (
+              <Button
+                variant="primary"
+                disabled={!draft && !canDraw}
+                onClick={draft ? discardDraft : () => startDraft()}
+              >
+                {draft ? <X size={16} /> : <SquareDashed size={16} />}
+                {draft ? "Cancel Drawing" : "Draw Boundary"}
+              </Button>
+            )}
             <select
+              className="basemap-select"
               aria-label="Basemap"
               value={basemap}
-              disabled={Boolean(draft)}
+              title={
+                satelliteSource
+                  ? "Choose a basemap"
+                  : "Satellite and hybrid require licensed imagery"
+              }
               onChange={(event) => {
-                setReady(false);
+                setImageryError("");
                 setBasemap(event.target.value as Basemap);
               }}
             >
-              {Object.entries(mapStyles).map(([id, style]) => (
-                <option key={id} value={id}>
-                  {style.label}
-                </option>
-              ))}
+              <option value="street">Street</option>
+              <option value="satellite" disabled={!satelliteSource}>
+                Satellite
+              </option>
+              <option value="hybrid" disabled={!satelliteSource}>
+                Hybrid
+              </option>
             </select>
             <button
               type="button"
@@ -416,18 +458,24 @@ export function FarmMap({
               type="button"
               className="bare-button"
               aria-label={full ? "Exit expanded map" : "Expand map"}
+              aria-pressed={full}
+              title={full ? "Exit fullscreen map" : "Fullscreen map"}
               onClick={() => setFull(!full)}
             >
               {full ? <X size={17} /> : <Maximize size={17} />}
             </button>
           </div>
         </header>
+        {imageryError && (
+          <div className="map-imagery-notice" role="alert">
+            {imageryError}
+          </div>
+        )}
         <div className={panel ? "map-grid" : "map-grid map-only"}>
           <GeoCanvas
             fields={visible}
             selected={editing || !draft ? field?.id : undefined}
             focusField={focusField}
-            basemap={basemap}
             onSelect={pick}
             draft={draft ?? undefined}
             onDraftChange={setDraft}
@@ -436,6 +484,11 @@ export function FarmMap({
             target={target}
             resetView={resetView}
             clearDraft={clearDraft}
+            basemap={basemap}
+            onImageryError={() => {
+              setBasemap("street");
+              setImageryError("Satellite imagery could not be loaded. Street view is active.");
+            }}
           />
           {panel && (
             <aside className="field-panel">

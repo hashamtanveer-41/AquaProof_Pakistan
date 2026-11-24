@@ -37,7 +37,7 @@
 
 ## ⚡ Overview
 
-**Current status.** AquaProof supports geographic field registration, crop seasons, scheduled email, field-level weather, and irrigation scenarios. Farm Map opens over Pakistan with MapTiler satellite imagery and can switch to hybrid or streets. Weather and irrigation use the saved field's PostGIS representative point.
+**Current status.** AquaProof supports geographic field registration, crop seasons, scheduled email, field-level weather, and irrigation scenarios. Farm Map opens over Pakistan in MapLibre GL JS with the OpenFreeMap Liberty vector basemap. Weather and irrigation use the saved field's PostGIS representative point.
 
 **AquaProof Pakistan** gives government agricultural officers a digital record of every registered farm and uses location-specific weather data, FAO-56 scientific simulation, and AI communication to deliver timely, personalized irrigation and crop-management guidance — even to farmers who don't use smartphones.
 
@@ -145,7 +145,7 @@ flowchart TD
 These integrations are planned for a functional government-operated irrigation management platform. Inspect each project's documentation, source code, and license before implementation.
 
 1. **PI-Advisor** — Use its irrigation algorithms, soil-water balance calculations, and crop water requirement models as the scientific foundation. [PI-Advisor](https://github.com/wateraccounting/PI-Advisor)
-2. **MapTiler Cloud, MapLibre GL JS, and Terra Draw** provide the basemap, location search, and boundary editor. Turf estimates draft area and PostGIS calculates saved area. [MapTiler and MapLibre](https://docs.maptiler.com/maplibre/) · [Terra Draw](https://github.com/JamesLMilner/terra-draw)
+2. **MapLibre GL JS, OpenFreeMap, and Terra Draw** provide the vector basemap and boundary editor. Open-Meteo provides place search. Turf estimates draft area and PostGIS calculates saved area. [OpenFreeMap](https://openfreemap.org/quick_start/) · [Terra Draw](https://github.com/JamesLMilner/terra-draw)
 3. **PostgreSQL and PostGIS** — Persist farm boundaries, farmer profiles, irrigation schedules, and historical records. [PostgreSQL](https://github.com/postgres/postgres) · [PostGIS](https://github.com/postgis/postgis)
 4. **Tomorrow.io** provides field forecasts, current conditions, and plan-dependent agricultural and historical weather data. [Tomorrow.io API docs](https://docs.tomorrow.io/reference/welcome)
 5. **SciPy** — Develop Pakistan-specific Warabandi scheduling, canal water allocation, tubewell cost optimization, and what-if simulations. [SciPy](https://github.com/scipy/scipy)
@@ -264,7 +264,7 @@ aquaproof-pakistan/
 
 ### Backend Setup (FastAPI)
 
-Set `MAPTILER_API_KEY` and `TOMORROW_API_KEY` in the repository-root `.env` file or the environment that runs Compose. Compose passes them to the backend. Then start the dashboard, API, PostgreSQL with PostGIS, and Mailpit from the repository root.
+Set `TOMORROW_API_KEY` in the repository-root `.env` file or the environment that runs Compose. Compose passes it to the backend. Then start the dashboard, API, PostgreSQL with PostGIS, and Mailpit from the repository root.
 
 ```bash
 docker compose up -d --build
@@ -284,11 +284,12 @@ pnpm dev
 
 Vite proxies `/api` to the local backend. Set `VITE_API_URL` to override the backend address for a separate deployment. For a native development backend, start Uvicorn from `backend` with `--env-file ../.env` or set the variables in its process environment.
 
-### MapTiler credentials and boundary tracing
+### Farm map and boundary drawing
 
-- Use a MapTiler browser API key restricted to your approved HTTP origins in the MapTiler dashboard. Configure separate keys for local development and production. The AquaProof map config endpoint supplies this browser key at runtime. MapLibre and geocoding call MapTiler directly and retain attribution. Keep any MapTiler service token private. [MapTiler key restrictions](https://docs.maptiler.com/guides/developer/credentials/api-key/) · [Attribution](https://docs.maptiler.com/guides/map-design/attribution/add-attribution/)
-- Boundary creation and editing default to disabled in the API and UI. Verify that the subscription and imagery terms authorize your agency's digitization, database storage, and any export or redistribution of derived polygons. Set `MAPTILER_TRACING_AUTHORIZED=1` on the API only after documenting that permission. The public terms alone do not confirm authorization for a specific deployment. [MapTiler Cloud terms](https://www.maptiler.com/terms/cloud/)
-- Map search is limited to Pakistani place results and accepts decimal coordinates in latitude, longitude order. Results and reverse-geocoded labels are transient. Saved polygons reference farmers and store a PostGIS point inside each polygon. The point updates automatically when the boundary changes.
+- The Liberty vector basemap uses OpenStreetMap data and requires no API key. OpenStreetMap raster tiles provide a fallback if the vector style fails to load. Set `VITE_MAP_TILES` at build time to use an approved OpenStreetMap raster tile service directly. Attribution appears on the map. [OpenFreeMap](https://openfreemap.org/quick_start/) · [OpenStreetMap tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
+- Satellite and Hybrid are available when the deployment supplies an authorized satellite basemap. Set `VITE_SATELLITE_TILES` to a browser-accessible HTTPS XYZ template with `{z}`, `{x}`, and `{y}`. Supply `VITE_SATELLITE_ATTRIBUTION`, `VITE_SATELLITE_LICENSE_URL`, and `VITE_SATELLITE_MAX_ZOOM` for the source. Hybrid adds roads and place labels from the Liberty style.
+- Set `VITE_SATELLITE_DIGITIZATION_AUTHORIZED=true` after verifying in writing that the imagery covers the intended Pakistani farm areas and that its terms permit display, boundary tracing, and storage and export of the resulting polygons. Use a tile endpoint that allows your dashboard origin. These build values are public. Any provider that requires private credentials must be served through an authorized tile gateway.
+- Use verified farm boundary information when placing vertices. Map search accepts place names and decimal coordinates in latitude, longitude order. Saved polygons reference farmers and store a PostGIS point inside each polygon. The point updates automatically when the boundary changes.
 - The draft area is a Turf estimate. Saved area is taken from PostGIS geography and shown in acres, kanals, marlas, and hectares using 8 kanals and 160 marlas per acre. Irrigation colours reflect the saved supply configuration and today's canal turn. Removing a field archives it and retains its history.
 
 ### Field weather and irrigation
@@ -300,6 +301,7 @@ Vite proxies `/api` to the local backend. Set `VITE_API_URL` to override the bac
 - AquaProof API responses use `Cache-Control: no-store`. Weather panels, searches, and conversation history have refresh controls. The profile menu can also refresh the workspace registry.
 - In Crop Monitoring, save the crop and planting date. In Irrigation Intelligence, enter the field's measured root-zone and surface water parameters, current depletion and application efficiency. Add the farmer's first Warabandi turn date, recurrence, duration and flow, or the tubewell flow, daily hours and pumping cost, as appropriate.
 - Run a baseline or change rainfall, canal timing or pumping cost. Root-zone calculations use the PI-Advisor crop calendar and an FAO-56 balance with estimated surface evaporation. The plan uses consecutive forecast days with usable rainfall and ET₀ and reports the provider. Canal capacity comes from the entered roster and flow, and irrigation windows are modeled at daily resolution.
+- In **Irrigation Intelligence → PI-Advisor irrigation planner**, run the baseline and select a forecast day to accept, skip, adjust or reopen an irrigation decision. Each revision stays with the crop season in PostgreSQL. The calculation fixes the saved volumes for reviewed days and recomputes the remaining forecast, including depletion, pumping cost and supply conflicts. Decisions record intended irrigation. Updates to measured depletion and records of completed irrigation are separate workflows. [PI-Advisor workflow](https://github.com/wateraccounting/PI-Advisor#usage)
 - **Explain this plan with AI** uses the configured OpenAI-compatible API. It sends the modeled plan and weather context without farmer contact details. The explanation stays separate from the calculated quantities and costs.
 
 To add two clearly labeled synthetic registry examples in Sindh and Balochistan, run:
@@ -359,7 +361,7 @@ The model receives only the verified farmer's scoped context. Parcel coordinates
 | `GET` | `/api/fields/{id}` | Retrieve field with GeoJSON boundary |
 | `PATCH` | `/api/fields/{id}` | Update registered field |
 | `POST` | `/api/crop-seasons?field_id={id}` | Start a new crop cycle for a field |
-| `GET` | `/api/map/config` | Browser MapTiler key and tracing authorization state |
+| `GET` | `/api/locations?q={place}` | Search for map locations by name |
 | `DELETE` | `/api/fields/{id}` | Archive the field and retain its history |
 | `GET` | `/api/weather/search?q={location}` | Hourly and daily forecast for a name or coordinates |
 | `GET` | `/api/weather/current?latitude={lat}&longitude={lon}` | Current conditions for a searched location |
@@ -370,6 +372,8 @@ The model receives only the verified farmer's scoped context. Parcel coordinates
 | `GET` | `/api/fields/{id}/weather/agriculture` | Hourly soil and solar outlook for the field |
 | `GET / PUT` | `/api/fields/{id}/irrigation-settings` | Read or save soil water and supply inputs |
 | `POST` | `/api/fields/{id}/simulate` | Run a field-specific irrigation scenario |
+| `GET` | `/api/crop-library` | List available PI-Advisor crop calendars |
+| `PUT` | `/api/fields/{id}/irrigation-decisions/{date}` | Save a reviewed decision against the current crop season and recalculate the baseline |
 | `POST` | `/api/fields/{id}/optimize` | Compare irrigation strategies, pumping costs, and crop stress |
 | `POST` | `/api/fields/{id}/intelligence` | Explain a calculated plan using the configured model |
 | `GET` | `/api/fields/{id}/advisories` | Retrieve advisory history for a field |

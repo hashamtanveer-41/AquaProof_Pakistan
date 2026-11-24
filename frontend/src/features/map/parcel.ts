@@ -1,9 +1,12 @@
 import area from "@turf/area";
 import type { Field, Point } from "@/domain/data";
 import { polygon } from "@/domain/registry";
-import { validMapPoint } from "./maptiler";
 
 const ACRE_M2 = 4046.8564224;
+
+export function validMapPoint([longitude, latitude]: Point) {
+  return Math.abs(longitude) <= 180 && Math.abs(latitude) <= 85.051129;
+}
 
 export const irrigationStyles = {
   canal_today: { label: "Canal turn today", color: "#2563eb" },

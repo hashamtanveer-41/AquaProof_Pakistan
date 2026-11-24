@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { acres, demoRegion } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
 import { Button, Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
-import { connected, startSeason } from "@/domain/registry";
+import { connected, request, startSeason } from "@/domain/registry";
 
 export default function Crops({
   fields,
@@ -20,7 +20,21 @@ export default function Crops({
   const [crop, setCrop] = useState("");
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const [library, setLibrary] = useState<string[]>([]);
   const regionFields = fields.filter((field) => !region || field.region === region);
+  const hasFields = regionFields.length > 0;
+  useEffect(() => {
+    if (!connected || !hasFields) return;
+    const controller = new AbortController();
+    request<string[]>("/crop-library", "GET", undefined, controller.signal)
+      .then((rows) => {
+        if (!controller.signal.aborted) setLibrary(rows);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setLibrary([]);
+      });
+    return () => controller.abort();
+  }, [hasFields]);
   const filtered = regionFields.filter((field) => !crop || field.crop === crop);
   return (
     <>
@@ -75,7 +89,15 @@ export default function Crops({
             </label>
             <label>
               Crop
-              <input name="crop" required maxLength={160} />
+              <input name="crop" list="pi-advisor-crops" required maxLength={160} />
+              <datalist id="pi-advisor-crops">
+                {library.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              {library.length > 0 && (
+                <small>{library.length} PI-Advisor crop calendars available</small>
+              )}
             </label>
             <label>
               Variety

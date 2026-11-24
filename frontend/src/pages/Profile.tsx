@@ -11,7 +11,6 @@ export default function Profile({
   open,
   go,
   draw,
-  canDraw,
 }: {
   farmer: Farmer;
   fields: Field[];
@@ -19,7 +18,6 @@ export default function Profile({
   open: SelectField;
   go: (page: Page) => void;
   draw: () => void;
-  canDraw: boolean;
 }) {
   const plots = fields.filter((f) => f.farmerId === farmer.id);
   const selected = plots.find((f) => f.id === field?.id) ?? plots[0];
@@ -55,7 +53,7 @@ export default function Profile({
           <Card
             title="Registered fields"
             subtitle="Each field keeps its own crop and irrigation history."
-            action={canDraw ? <TextAction onClick={draw}>Add field</TextAction> : undefined}
+            action={<TextAction onClick={draw}>Add field</TextAction>}
           >
             <div className="field-list">
               {plots.map((f) => (
@@ -80,12 +78,8 @@ export default function Profile({
             {!plots.length && (
               <Empty
                 title="No mapped fields"
-                text={
-                  canDraw
-                    ? "Draw a boundary and link the saved field to this farmer."
-                    : "Boundary tracing requires imagery digitization and storage authorization."
-                }
-                action={canDraw ? <Button onClick={draw}>Draw a field</Button> : undefined}
+                text="Draw a boundary and link the saved field to this farmer."
+                action={<Button onClick={draw}>Draw a field</Button>}
               />
             )}
           </Card>

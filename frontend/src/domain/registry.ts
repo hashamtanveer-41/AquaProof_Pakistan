@@ -47,11 +47,17 @@ export function toField({ boundary, seasons, history, ...base }: SavedField): Fi
   };
 }
 
-export async function request<T>(path: string, method = "GET", data?: unknown): Promise<T> {
+export async function request<T>(
+  path: string,
+  method = "GET",
+  data?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const timeout = method === "GET" ? AbortSignal.timeout(35_000) : undefined;
   const response = await fetch(`${api}/api${path}`, {
     method,
     cache: "no-store",
-    signal: method === "GET" ? AbortSignal.timeout(35_000) : undefined,
+    signal: signal && timeout ? AbortSignal.any([signal, timeout]) : (signal ?? timeout),
     headers: {
       ...(data === undefined ? {} : { "Content-Type": "application/json" }),
       ...(officerToken && { Authorization: `Bearer ${officerToken}` }),
@@ -73,8 +79,13 @@ export async function request<T>(path: string, method = "GET", data?: unknown): 
   return response.json();
 }
 
-export async function loadRegistry() {
-  const data = await request<{ farmers: Farmer[]; fields: SavedField[] }>("/registry");
+export async function loadRegistry(signal?: AbortSignal) {
+  const data = await request<{ farmers: Farmer[]; fields: SavedField[] }>(
+    "/registry",
+    "GET",
+    undefined,
+    signal,
+  );
   return { farmers: data.farmers, fields: data.fields.map(toField) };
 }
 

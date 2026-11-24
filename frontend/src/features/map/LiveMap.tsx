@@ -4,8 +4,12 @@ import {
   LngLatBounds,
   Map,
   NavigationControl,
+  ScaleControl,
   setWorkerUrl,
   type GeoJSONSource,
+  type GeoJSONSourceDiff,
+  type RasterTileSource,
+  type StyleSpecification,
 } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import {
@@ -19,16 +23,33 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Button } from "@/components/ui";
 import type { Field, Point } from "@/domain/data";
 import { polygon } from "@/domain/registry";
-import { type Basemap, mapTilerUrl, providerError, styleUrl, useMapConfig } from "./maptiler";
 import { irrigationStyle } from "./parcel";
+import { hybridLayer, satelliteSource, type Basemap } from "./basemap";
 
 const PAKISTAN: [Point, Point] = [
   [60.8, 23.5],
   [77.9, 37.2],
 ];
-const TILE_LOGO = "https://api.maptiler.com/resources/logo.svg";
+const streetTiles =
+  import.meta.env.VITE_MAP_TILES || "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const libertyStyle = "https://tiles.openfreemap.org/styles/liberty";
+const rasterStyle: StyleSpecification = {
+  version: 8,
+  sources: {
+    streets: {
+      type: "raster",
+      tiles: [streetTiles],
+      tileSize: 256,
+      maxzoom: 19,
+      attribution:
+        '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>',
+    },
+  },
+  layers: [{ id: "streets", source: "streets", type: "raster" }],
+};
 const plots = "aquaproof-parcels";
 const edges = "aquaproof-parcel-edges";
+const imagery = "aquaproof-satellite";
 setWorkerUrl(workerUrl);
 
 export type LiveMapProps = {
@@ -41,26 +62,45 @@ export type LiveMapProps = {
   onPreview?: (points: Point[]) => void;
   onReady?: (ready: boolean) => void;
   target?: Point;
-  basemap?: Basemap;
   clearDraft?: number;
   resetView?: number;
+  basemap?: Basemap;
+  onImageryError?: () => void;
 };
 
-function parcelData(fields: Field[], selected?: string, drawing = false) {
+function parcelFeature(field: Field) {
   return {
-    type: "FeatureCollection" as const,
-    features: fields
-      .filter((field) => !(drawing && field.id === selected))
-      .map((field) => ({
-        type: "Feature" as const,
-        geometry: polygon(field.points),
-        properties: {
-          id: field.id,
-          selected: field.id === selected,
-          color: irrigationStyle(field).color,
-        },
-      })),
+    type: "Feature" as const,
+    id: field.id,
+    geometry: polygon(field.points),
+    properties: { id: field.id, color: irrigationStyle(field).color },
   };
+}
+
+function parcelData(fields: Field[]) {
+  return { type: "FeatureCollection" as const, features: fields.map(parcelFeature) };
+}
+
+function parcelChanges(before: Field[], after: Field[]) {
+  const pending = new globalThis.Map(before.map((field) => [field.id, field]));
+  const add: NonNullable<GeoJSONSourceDiff["add"]> = [];
+  const update: NonNullable<GeoJSONSourceDiff["update"]> = [];
+  for (const field of after) {
+    const previous = pending.get(field.id);
+    pending.delete(field.id);
+    if (!previous) add.push(parcelFeature(field));
+    else if (
+      previous.points !== field.points ||
+      previous.irrigation_status !== field.irrigation_status
+    ) {
+      update.push({
+        id: field.id,
+        newGeometry: polygon(field.points),
+        addOrUpdateProperties: [{ key: "color", value: irrigationStyle(field).color }],
+      });
+    }
+  }
+  return { add, update, remove: [...pending.keys()] };
 }
 
 export default function LiveMap({
@@ -73,13 +113,12 @@ export default function LiveMap({
   onPreview,
   onReady,
   target,
-  basemap = "satellite",
   clearDraft = 0,
   resetView = 0,
+  basemap = "street",
+  onImageryError,
 }: LiveMapProps) {
-  const { config, error: configError, retry } = useMapConfig();
-  const key = config?.api_key;
-  const drawing = config?.tracing_authorized === true && draft !== undefined;
+  const drawing = draft !== undefined;
   const container = useRef<HTMLDivElement>(null);
   const refs = useRef({
     fields,
@@ -89,14 +128,19 @@ export default function LiveMap({
     onPreview,
     draft,
     drawing,
-    basemap,
+    onImageryError,
   });
   const [map, setMap] = useState<Map>();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const applied = useRef<{ basemap: Basemap; attempt: number } | undefined>(undefined);
+  const [loadingTiles, setLoadingTiles] = useState(false);
+  const [activeStyle, setActiveStyle] = useState(0);
+  const [hybridAvailable, setHybridAvailable] = useState(false);
   const clearDrawing = useRef<(() => void) | null>(null);
+  const baseLayers = useRef<ReturnType<Map["getStyle"]>["layers"]>([]);
+  const sourceFields = useRef<Field[]>([]);
+  const imageryLoaded = useRef(false);
 
   useEffect(() => {
     refs.current = {
@@ -107,44 +151,64 @@ export default function LiveMap({
       onPreview,
       draft,
       drawing,
-      basemap,
+      onImageryError,
     };
-  }, [fields, selected, onSelect, onDraftChange, onPreview, draft, drawing, basemap]);
+  }, [fields, selected, onSelect, onDraftChange, onPreview, draft, drawing, onImageryError]);
 
   useEffect(() => {
-    onReady?.(ready && !error && Boolean(key));
-  }, [onReady, ready, error, key]);
+    onReady?.(ready);
+  }, [onReady, ready]);
 
   useEffect(() => {
-    if (!container.current || !key) return;
+    if (!container.current) return;
     let instance: Map;
+    let usingRaster = Boolean(import.meta.env.VITE_MAP_TILES);
     try {
-      const initial = refs.current.basemap;
       instance = new Map({
         container: container.current,
         bounds: PAKISTAN,
         fitBoundsOptions: { padding: 22 },
         renderWorldCopies: false,
-        style: styleUrl(initial, key),
+        style: usingRaster ? rasterStyle : libertyStyle,
         attributionControl: false,
-        transformRequest: (url) => ({ url: mapTilerUrl(url, key) }),
+        maxTileCacheSize: 192,
+        maxTileCacheZoomLevels: 3,
       });
-      applied.current = { basemap: initial, attempt: 0 };
     } catch {
       setError("The live map requires WebGL. Map search and registry records remain available.");
       return;
     }
     setMap(instance);
     instance.addControl(new NavigationControl());
+    instance.addControl(new ScaleControl({ unit: "metric" }));
     instance.addControl(new AttributionControl({ compact: false }));
+    const useStreetTiles = () => {
+      if (usingRaster || instance.getSource(plots)) return;
+      usingRaster = true;
+      instance.setStyle(rasterStyle, { diff: false });
+    };
+    const styleTimeout = window.setTimeout(useStreetTiles, 8000);
     instance.on("error", (event) => {
-      setError(providerError("status" in event.error ? Number(event.error.status) : undefined));
+      if ("sourceId" in event && event.sourceId === imagery) {
+        setLoadingTiles(false);
+        refs.current.onImageryError?.();
+        return;
+      }
+      if (!usingRaster && !instance.getSource(plots)) {
+        useStreetTiles();
+        return;
+      }
+      setError("Some map tiles are unavailable. You can retry the basemap.");
     });
     instance.on("style.load", () => {
-      const state = refs.current;
+      window.clearTimeout(styleTimeout);
+      imageryLoaded.current = false;
+      baseLayers.current = instance.getStyle().layers;
+      setHybridAvailable(baseLayers.current.some(hybridLayer));
+      sourceFields.current = refs.current.fields;
       instance.addSource(plots, {
         type: "geojson",
-        data: parcelData(state.fields, state.selected, state.drawing),
+        data: parcelData(sourceFields.current),
       });
       instance.addLayer({
         id: plots,
@@ -152,7 +216,14 @@ export default function LiveMap({
         type: "fill",
         paint: {
           "fill-color": ["get", "color"],
-          "fill-opacity": ["case", ["get", "selected"], 0.56, 0.34],
+          "fill-opacity": [
+            "case",
+            ["boolean", ["feature-state", "hidden"], false],
+            0,
+            ["boolean", ["feature-state", "selected"], false],
+            0.56,
+            0.34,
+          ],
         },
       });
       instance.addLayer({
@@ -161,12 +232,17 @@ export default function LiveMap({
         type: "line",
         paint: {
           "line-color": ["get", "color"],
-          "line-width": ["case", ["get", "selected"], 4, 2],
+          "line-width": ["case", ["boolean", ["feature-state", "selected"], false], 4, 2],
+          "line-opacity": ["case", ["boolean", ["feature-state", "hidden"], false], 0, 1],
         },
       });
+      setActiveStyle((current) => current + 1);
+      setReady(true);
     });
-    instance.on("idle", () => {
-      if (instance.getSource(plots)) setReady(true);
+    instance.on("sourcedata", (event) => {
+      if (event.sourceId === imagery && event.coord && event.sourceDataType === "content") {
+        imageryLoaded.current = true;
+      }
     });
     instance.on("click", (event) => {
       if (refs.current.drawing || !instance.getLayer(plots)) return;
@@ -176,44 +252,97 @@ export default function LiveMap({
     const observer = new ResizeObserver(() => instance.resize());
     observer.observe(container.current);
     return () => {
+      window.clearTimeout(styleTimeout);
       observer.disconnect();
       setReady(false);
       setMap(undefined);
       instance.remove();
     };
-  }, [key]);
+  }, []);
 
   useEffect(() => {
-    if (
-      !map ||
-      !key ||
-      (applied.current?.basemap === basemap && applied.current.attempt === attempt)
-    )
-      return;
-    applied.current = { basemap, attempt };
-    setReady(false);
+    if (!map || !attempt) return;
     setError("");
-    map.setStyle(styleUrl(basemap, key), { diff: false });
-  }, [map, basemap, attempt, key]);
+    const raster = map.getSource<RasterTileSource>("streets");
+    if (raster) raster.setTiles([streetTiles]);
+    else {
+      setReady(false);
+      map.setStyle(rasterStyle, { diff: false });
+    }
+  }, [map, attempt]);
 
   useEffect(() => {
-    map?.getSource<GeoJSONSource>(plots)?.setData(parcelData(fields, selected, drawing));
-  }, [map, fields, selected, drawing]);
+    const source = map?.getSource<GeoJSONSource>(plots);
+    if (!source || sourceFields.current === fields) return;
+    const previous = sourceFields.current;
+    sourceFields.current = fields;
+    if (!previous.length || !fields.length) {
+      void source.setData(parcelData(fields));
+      return;
+    }
+    const changes = parcelChanges(previous, fields);
+    if (changes.add.length || changes.update.length || changes.remove.length) {
+      void source.updateData(changes).catch(() => {
+        if (map?.getSource(plots) === source) void source.setData(parcelData(sourceFields.current));
+      });
+    }
+  }, [map, fields, activeStyle]);
+
+  useEffect(() => {
+    if (!map?.getSource(plots) || !selected) return;
+    const feature = { source: plots, id: selected };
+    map.setFeatureState(feature, { selected: true, hidden: drawing });
+    return () => {
+      if (map.getSource(plots)) map.removeFeatureState(feature);
+    };
+  }, [map, selected, drawing, activeStyle, fields]);
+
+  useEffect(() => {
+    if (!map?.getSource(plots)) return;
+    if (basemap !== "street" && satelliteSource && !map.getSource(imagery)) {
+      map.addSource(imagery, satelliteSource);
+      map.addLayer(
+        { id: imagery, type: "raster", source: imagery },
+        baseLayers.current[0]?.id ?? plots,
+      );
+    }
+    if (!map.getLayer(imagery)) return;
+    const street = basemap === "street";
+    const addLabels = basemap === "hybrid" && hybridAvailable;
+    map.setLayoutProperty(imagery, "visibility", street ? "none" : "visible");
+    for (const layer of baseLayers.current) {
+      const visibility =
+        street || (addLabels && hybridLayer(layer)) ? layer.layout?.visibility : "none";
+      map.setLayoutProperty(layer.id, "visibility", visibility ?? "visible");
+    }
+    setLoadingTiles(!street);
+    if (street) return;
+    const endLoading = () => {
+      setLoadingTiles(false);
+      if (!imageryLoaded.current) refs.current.onImageryError?.();
+    };
+    map.once("idle", endLoading);
+    const timeout = window.setTimeout(endLoading, 12_000);
+    return () => {
+      map.off("idle", endLoading);
+      window.clearTimeout(timeout);
+    };
+  }, [map, basemap, activeStyle, hybridAvailable]);
 
   const selectedPoints = fields.find((field) => field.id === selected)?.points;
   useEffect(() => {
     if (!map || !focusField || !selectedPoints?.length || target) return;
     const bounds = new LngLatBounds();
     selectedPoints.forEach((point) => bounds.extend(point));
-    map.fitBounds(bounds, { padding: 44, maxZoom: 18, duration: 0 });
+    map.fitBounds(bounds, { padding: 44, maxZoom: 18, duration: 600, linear: true });
   }, [map, focusField, selectedPoints, target]);
 
   useEffect(() => {
-    if (map && target) map.jumpTo({ center: target, zoom: 15 });
+    if (map && target) map.flyTo({ center: target, zoom: 16, duration: 900 });
   }, [map, target]);
 
   useEffect(() => {
-    if (map && resetView) map.fitBounds(PAKISTAN, { padding: 22, duration: 0 });
+    if (map && resetView) map.fitBounds(PAKISTAN, { padding: 22, duration: 700 });
   }, [map, resetView]);
 
   useEffect(() => {
@@ -305,25 +434,20 @@ export default function LiveMap({
   }, [clearDraft]);
 
   return (
-    <div className="geo-canvas maptiler-workspace" role="region" aria-label="Live farm map">
-      <div ref={container} className="maptiler-canvas" />
-      {ready && key && (
-        <a
-          className="maptiler-logo"
-          href="https://www.maptiler.com/"
-          target="_blank"
-          rel="noopener"
-        >
-          <img src={mapTilerUrl(TILE_LOGO, key)} alt="MapTiler" />
-        </a>
-      )}
-      {(configError || error || !ready) && (
-        <div className="maptiler-status" role={configError || error ? "alert" : "status"}>
-          <span>{configError || error || "Loading MapTiler…"}</span>
-          {(configError || (error && map)) && (
-            <Button onClick={configError ? retry : () => setAttempt((count) => count + 1)}>
-              Retry map
-            </Button>
+    <div className="geo-canvas live-map" role="region" aria-label="Live farm map">
+      <div ref={container} className="live-map-canvas" />
+      {(error || !ready || loadingTiles || (basemap === "hybrid" && !hybridAvailable)) && (
+        <div className="live-map-status" role={error ? "alert" : "status"}>
+          <span>
+            {error ||
+              (!ready
+                ? "Loading map…"
+                : loadingTiles
+                  ? "Loading imagery…"
+                  : "Street labels are unavailable.")}
+          </span>
+          {error && map && !drawing && (
+            <Button onClick={() => setAttempt((count) => count + 1)}>Retry basemap</Button>
           )}
         </div>
       )}
