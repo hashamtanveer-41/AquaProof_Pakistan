@@ -22,6 +22,7 @@ import { acres, measure, regionData, regions, validBoundary } from "@/domain/dat
 import type { Farmer, Field, Point, Region } from "@/domain/data";
 import { Button, Chip, Demo, Empty, PageTitle, Stat } from "@/components/ui";
 import { GeoCanvas } from "./GeoCanvas";
+import { connected, polygon } from "@/domain/registry";
 
 export function FarmMap({
   region,
@@ -240,32 +241,34 @@ export function FarmMap({
               </div>
             )}
           </div>
-          <div className="layer-wrap">
-            <Button onClick={() => setLayerMenu(!layerMenu)}>
-              <Layers size={16} />
-              <span>{satellite ? "Satellite" : "Standard"}</span>
-              <ChevronDown size={13} />
-            </Button>
-            {layerMenu && (
-              <div className="dropdown layer-menu">
-                {["Satellite", "Standard"].map((l) => (
-                  <button
-                    key={l}
-                    onClick={() => {
-                      setSatellite(l === "Satellite");
-                      setLayerMenu(false);
-                    }}
-                  >
-                    <Layers size={15} />
-                    {l}
-                    {(l === "Satellite") === satellite && (
-                      <Check size={15} className="menu-check" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {!connected && (
+            <div className="layer-wrap">
+              <Button onClick={() => setLayerMenu(!layerMenu)}>
+                <Layers size={16} />
+                <span>{satellite ? "Satellite" : "Standard"}</span>
+                <ChevronDown size={13} />
+              </Button>
+              {layerMenu && (
+                <div className="dropdown layer-menu">
+                  {["Satellite", "Standard"].map((l) => (
+                    <button
+                      key={l}
+                      onClick={() => {
+                        setSatellite(l === "Satellite");
+                        setLayerMenu(false);
+                      }}
+                    >
+                      <Layers size={15} />
+                      {l}
+                      {(l === "Satellite") === satellite && (
+                        <Check size={15} className="menu-check" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </header>
         <div className={`map-grid ${panel ? "" : "map-only"}`}>
           <GeoCanvas
@@ -278,6 +281,7 @@ export function FarmMap({
             tool={tool}
             editing={editing}
             draft={draft ?? undefined}
+            onDraftChange={setDraft}
             activePoint={activePoint}
             setActivePoint={setActivePoint}
             onPoint={(p) => {
@@ -329,23 +333,32 @@ export function FarmMap({
                   </Chip>
                   <h2>{editing && field ? field.name : "New farm boundary"}</h2>
                   <p>
-                    Select at least three points on the map. To move a point, select it and click
-                    its new position.
+                    {connected
+                      ? editing
+                        ? "Drag a vertex to move it or select a midpoint to add a vertex."
+                        : "Select at least three points, then click the first point to close the boundary."
+                      : "Select at least three points on the map. To move a point, select it and click its new position."}
                   </p>
-                  <div className="area-box">
-                    <span className="mini-icon">
-                      <Ruler size={17} />
-                    </span>
-                    <div>
-                      <small>CALCULATED AREA</small>
-                      <strong>
-                        {acres(measure(draft))} <em>acres</em>
-                      </strong>
-                      <span>{acres(measure(draft) * 0.4046856)} hectares</span>
+                  {!connected && (
+                    <div className="area-box">
+                      <span className="mini-icon">
+                        <Ruler size={17} />
+                      </span>
+                      <div>
+                        <small>CALCULATED AREA</small>
+                        <strong>
+                          {acres(measure(draft))} <em>acres</em>
+                        </strong>
+                        <span>{acres(measure(draft) * 0.4046856)} hectares</span>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="field-actions">
-                    <Button variant="primary" onClick={onSave} disabled={!validBoundary(draft)}>
+                    <Button
+                      variant="primary"
+                      onClick={onSave}
+                      disabled={connected ? draft.length < 3 : !validBoundary(draft)}
+                    >
                       <Check size={16} /> Save Farm
                     </Button>
                     <Button onClick={closeDraft}>Discard changes</Button>
@@ -437,14 +450,16 @@ export function FarmMap({
                 Show details
               </button>
             )}
-            <Demo>Demo workspace</Demo>
+            {!connected && <Demo>Demo workspace</Demo>}
           </span>
         </footer>
       </section>
       <div className="after-map">
         <span>
-          <CircleHelp size={15} /> Boundaries are for demonstration and do not represent official
-          land records.
+          <CircleHelp size={15} />{" "}
+          {connected
+            ? "Mapped boundaries are officer records."
+            : "Boundaries are for demonstration and do not represent official land records."}
         </span>
         <button
           className="text-action"
@@ -452,12 +467,21 @@ export function FarmMap({
             const blob = new Blob(
               [
                 JSON.stringify(
-                  visible.map(({ id, name, acres, points }) => ({
-                    id,
-                    name,
-                    acres,
-                    demoPlanarCoordinates: points,
-                  })),
+                  connected
+                    ? {
+                        type: "FeatureCollection",
+                        features: visible.map(({ id, name, acres, points }) => ({
+                          type: "Feature",
+                          geometry: polygon(points),
+                          properties: { id, name, acres },
+                        })),
+                      }
+                    : visible.map(({ id, name, acres, points }) => ({
+                        id,
+                        name,
+                        acres,
+                        demoPlanarCoordinates: points,
+                      })),
                   null,
                   2,
                 ),
@@ -467,10 +491,12 @@ export function FarmMap({
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = "aquaproof-demo-boundaries.json";
+            a.download = connected
+              ? "aquaproof-boundaries.geojson"
+              : "aquaproof-demo-boundaries.json";
             a.click();
             URL.revokeObjectURL(url);
-            notify("Demo boundary file exported.");
+            notify("Boundary file exported.");
           }}
         >
           <ArrowDownToLine size={14} /> Export boundaries

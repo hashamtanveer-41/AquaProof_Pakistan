@@ -2,18 +2,24 @@ import { useState } from "react";
 import { acres, regionData } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
 import { Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
+import { connected, startSeason } from "@/domain/registry";
 
 export default function Crops({
   fields,
   region,
   open,
+  onSeasonSaved,
 }: {
   fields: Field[];
   region: Region;
   open: SelectField;
+  onSeasonSaved: (field: Field) => void;
 }) {
   const [crop, setCrop] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
   const filtered = fields.filter((f) => f.region === region && (!crop || f.crop === crop));
+  const regionFields = fields.filter((field) => field.region === region);
   return (
     <>
       <PageTitle
@@ -21,11 +27,72 @@ export default function Crops({
         title="Crop Monitoring"
         description="Track planting dates, estimated crop stages, and field activities by season."
       >
-        <Demo />
+        {!connected && <Demo />}
       </PageTitle>
+      {connected && regionFields.length > 0 && (
+        <Card title="Start a crop season">
+          <form
+            className="form-grid"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (saving) return;
+              const form = event.currentTarget;
+              const values = new FormData(form);
+              setSaving(true);
+              setStatus("");
+              try {
+                onSeasonSaved(
+                  await startSeason(
+                    String(values.get("field")),
+                    String(values.get("crop")),
+                    String(values.get("variety")).trim(),
+                    String(values.get("planted")),
+                  ),
+                );
+                form.reset();
+                setCrop("");
+                setStatus("Crop season saved.");
+              } catch (error) {
+                setStatus(
+                  error instanceof Error ? error.message : "Crop season could not be saved.",
+                );
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            <label>
+              Field
+              <select name="field" required>
+                {regionFields.map((field) => (
+                  <option key={field.id} value={field.id}>
+                    {field.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Crop
+              <input name="crop" required maxLength={160} />
+            </label>
+            <label>
+              Variety
+              <input name="variety" maxLength={160} />
+            </label>
+            <label>
+              Planting date
+              <input name="planted" type="date" required />
+            </label>
+            <button className="button" disabled={saving}>
+              Save season
+            </button>
+            {status && <p role="status">{status}</p>}
+          </form>
+        </Card>
+      )}
       <Card
         title="Current crop season"
-        subtitle={regionData[region].district}
+        subtitle={connected ? region : regionData[region].district}
         action={
           <select
             aria-label="Filter by crop"

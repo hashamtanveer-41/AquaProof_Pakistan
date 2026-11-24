@@ -1,0 +1,52 @@
+services:
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_MAP_TILES: ${VITE_MAP_TILES:-}
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - api
+  db:
+    image: postgis/postgis:16-3.5
+    environment:
+      POSTGRES_DB: aquaproof
+      POSTGRES_USER: aquaproof
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aquaproof-local}
+    volumes:
+      - registry-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aquaproof -d aquaproof"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./backend
+    command: ["sh", "-c", "python -m app.database && exec uvicorn app.main:app --host 0.0.0.0"]
+    environment:
+      DATABASE_URL: postgresql://aquaproof:${POSTGRES_PASSWORD:-aquaproof-local}@db/aquaproof
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-advisory@aquaproof.local}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-0}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USERNAME: ${IMAP_USERNAME:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:8025:8025"
+volumes:
+  registry-data:
