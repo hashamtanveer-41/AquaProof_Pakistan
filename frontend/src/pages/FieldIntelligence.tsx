@@ -3,17 +3,7 @@ import { Button, Card, Empty, PageTitle } from "@/components/ui";
 import { FieldSelect } from "@/components/FieldSelect";
 import type { Field, SelectField } from "@/domain/data";
 import { request } from "@/domain/registry";
-
-type Daily = {
-  date: string;
-  max_c: number | null;
-  min_c: number | null;
-  rain_mm: number | null;
-  eto_mm?: number | null;
-  solar_mj_m2?: number | null;
-  canal_capacity_m3?: number | null;
-};
-type Weather = { source: string; latitude: number; longitude: number; daily: Daily[] };
+import { loadForecast, type FieldWeather as Weather } from "@/domain/weather";
 type Settings = {
   taw_mm: number;
   initial_depletion_mm: number;
@@ -104,14 +94,14 @@ function WeatherTable({ weather, historical = false }: { weather: Weather; histo
   );
 }
 
-function FieldWeather({ path }: { path: string }) {
+function FieldWeather({ path, fieldId }: { path: string; fieldId: string }) {
   const [forecast, setForecast] = useState<Weather>();
   const [history, setHistory] = useState<Weather>();
   const [forecastStatus, setForecastStatus] = useState("Loading forecast…");
   const [historyStatus, setHistoryStatus] = useState("Loading history…");
   useEffect(() => {
     let active = true;
-    request<Weather>(`${path}/weather`)
+    loadForecast(fieldId)
       .then((data) => {
         if (active) {
           setForecast(data);
@@ -134,7 +124,7 @@ function FieldWeather({ path }: { path: string }) {
     return () => {
       active = false;
     };
-  }, [path]);
+  }, [path, fieldId]);
 
   async function loadHistory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -551,7 +541,7 @@ export default function FieldIntelligence({
       </PageTitle>
       {field ? (
         mode === "weather" ? (
-          <FieldWeather key={path} path={path} />
+          <FieldWeather key={path} path={path} fieldId={field.id} />
         ) : (
           <FieldIrrigation key={path} path={path} field={field} />
         )

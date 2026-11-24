@@ -47,6 +47,7 @@ import {
 const Crops = lazy(() => import("@/pages/Crops"));
 const Irrigation = lazy(() => import("@/pages/Irrigation"));
 const Overview = lazy(() => import("@/pages/Overview"));
+const LiveOverview = lazy(() => import("@/pages/LiveOverview"));
 const Profile = lazy(() => import("@/pages/Profile"));
 const Registry = lazy(() => import("@/pages/Registry"));
 const Reports = lazy(() => import("@/pages/Reports"));
@@ -603,17 +604,14 @@ export default function App() {
                 />
               )}
               {page === "overview" && connected && (
-                <Card title="Registry overview">
-                  <Details
-                    rows={[
-                      [
-                        "Registered farmers",
-                        farmers.filter((farmer) => !region || farmer.region === region).length,
-                      ],
-                      ["Mapped fields", visibleFields.length],
-                    ]}
-                  />
-                </Card>
+                <LiveOverview
+                  region={region}
+                  fields={visibleFields}
+                  farmers={farmers.filter((farmer) => !region || farmer.region === region)}
+                  field={mapField}
+                  open={openField}
+                  go={go}
+                />
               )}
               {page === "overview" && !connected && (
                 <Overview
