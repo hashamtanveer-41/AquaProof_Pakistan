@@ -152,30 +152,23 @@ flowchart TD
 
 ## 📁 Repository Structure
 
+The repository currently contains the standalone frontend below. The backend, data, and deployment paths that follow describe the planned project layout.
+
 ```text
 aquaproof-pakistan/
 │
-├── frontend/                        # React 19 + Vite + TypeScript
+├── frontend/              # React + Vite + TypeScript
+│   ├── public/          # Branding and demo satellite imagery
 │   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Dashboard.tsx        # Main officer overview
-│   │   │   ├── Farmers.tsx          # Farmer registry
-│   │   │   ├── FarmDetail.tsx       # Per-farm view: weather, crops, advisories
-│   │   │   ├── AdvisoryCenter.tsx   # Send & manage advisories
-│   │   │   └── Communications.tsx   # Farmer message log
-│   │   │
-│   │   ├── components/
-│   │   │   ├── FarmMap.tsx          # MapLibre GL JS map
-│   │   │   ├── BoundaryEditor.tsx   # Terra Draw polygon editor
-│   │   │   ├── FarmerForm.tsx       # Farmer & field registration form
-│   │   │   ├── WeatherPanel.tsx     # Location-specific weather display
-│   │   │   ├── IrrigationChart.tsx  # Canal vs tubewell cost chart (Recharts)
-│   │   │   └── ConversationPanel.tsx# Incoming/outgoing email log
-│   │   │
-│   │   ├── api/                     # Typed API client (HTTPX-compatible)
-│   │   └── types/                   # TypeScript domain definitions
-│   │
+│   │   ├── app/         # Dashboard shell, navigation, and state
+│   │   ├── pages/       # Dashboard views
+│   │   ├── features/    # Map and registration workflows
+│   │   ├── components/  # Shared UI components
+│   │   ├── domain/      # Demo data and irrigation calculations
+│   │   ├── styles/      # Global dashboard styles
+│   │   └── main.tsx     # React entry point
 │   ├── package.json
+│   ├── pnpm-lock.yaml
 │   └── vite.config.ts
 │
 ├── backend/                         # Python 3.12+ / FastAPI
@@ -239,7 +232,7 @@ aquaproof-pakistan/
 
 ### Prerequisites
 
-- **Node.js**: v18.0.0 or higher (v20+ recommended)
+- **Frontend** requires Node.js 20.19+ on the 20.x line or Node.js 22.12+, and pnpm 10.34.3.
 - **Python**: v3.12 or higher
 - **Docker & Docker Compose**: v2.0+
 - **MySQL**: 8.0+ (or use the Docker Compose service)
@@ -310,28 +303,15 @@ aquaproof-pakistan/
 
 ### Frontend Setup (React + Vite)
 
-1. **Navigate to the frontend directory:**
-   ```bash
-   cd frontend
-   ```
+The frontend runs with bundled demo data and satellite imagery. Field edits and advisory activity are held in browser memory for the current session. The demo requires no API credentials, backend service, or email delivery setup.
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+```bash
+cd frontend
+pnpm install --frozen-lockfile
+pnpm dev
+```
 
-3. **Configure environment variables:**
-   Create `frontend/.env`:
-   ```env
-   VITE_API_URL=http://localhost:8000
-   VITE_MAPLIBRE_STYLE=https://demotiles.maplibre.org/style.json
-   ```
-
-4. **Start the Vite development server:**
-   ```bash
-   npm run dev
-   ```
-   - Frontend UI: `http://localhost:5173`
+Open the local URL printed by Vite, usually http://localhost:5173.
 
 ---
 
@@ -395,11 +375,13 @@ PYTHONPATH=backend python3 -m pytest backend/tests/ -v
 
 ### Frontend Production Build
 
-Validate TypeScript types and build integrity:
+Check source formatting and TypeScript, then build the frontend.
 
 ```bash
 cd frontend
-npm run build
+pnpm format:check
+pnpm typecheck
+pnpm build
 ```
 
 ---
