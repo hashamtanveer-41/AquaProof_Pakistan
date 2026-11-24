@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight, Droplets, Sprout } from "lucide-react";
 import { acres, pkr, regionData } from "@/domain/data";
 import type { Farmer, Field, Page, SelectField } from "@/domain/data";
 import { GeoCanvas } from "@/features/map/GeoCanvas";
+import { connected } from "@/domain/registry";
 import { Button, Card, Chip, Demo, Details, Empty, PageTitle, TextAction } from "@/components/ui";
 
 export default function Profile({
@@ -35,10 +36,13 @@ export default function Profile({
         description={`${farmer.village} · ${map.district}, ${farmer.region}`}
       >
         <Chip dot>Registered farmer</Chip>
-        <Button onClick={() => go("advisory")}>
+        <Button
+          onClick={() => (selected ? open(selected.id, "advisory") : go("advisory"))}
+          disabled={connected && !selected}
+        >
           Open conversation <ArrowRight size={16} />
         </Button>
-        {selected && (
+        {selected && !connected && (
           <Button variant="primary" onClick={() => open(selected.id, "irrigation")}>
             <Droplets size={16} /> Simulate irrigation
           </Button>
@@ -46,14 +50,14 @@ export default function Profile({
       </PageTitle>
       <div className="grid-2 profile-grid">
         <div className="stack">
-          <Card title="Farmer information" action={<Demo />}>
+          <Card title="Farmer information" action={connected ? undefined : <Demo />}>
             <Details
               rows={[
                 ["Farmer ID", farmer.id],
                 ["Email", farmer.email || "Not provided"],
                 ["Phone", farmer.phone || "Not provided"],
                 ["Province", farmer.region],
-                ["District", map.district],
+                ...(!connected ? [["District", map.district] as [string, string]] : []),
                 ["Village", farmer.village],
                 ["Total mapped area", `${acres(plots.reduce((sum, f) => sum + f.acres, 0))} ac`],
               ]}
@@ -93,13 +97,21 @@ export default function Profile({
             )}
           </Card>
           <Card title="Advisory history" subtitle="Officer-reviewed communications">
-            <Details
-              rows={[
-                ["Approved demo advisories", advisoryCount],
-                ["Communication channel", "Simulated email"],
-              ]}
-            />
-            <TextAction onClick={() => go("advisory")}>Open conversation</TextAction>
+            {!connected && (
+              <Details
+                rows={[
+                  ["Approved demo advisories", advisoryCount],
+                  ["Communication channel", "Simulated email"],
+                ]}
+              />
+            )}
+            {(!connected || selected) && (
+              <TextAction
+                onClick={() => (selected ? open(selected.id, "advisory") : go("advisory"))}
+              >
+                Open conversation
+              </TextAction>
+            )}
           </Card>
         </div>
         <div className="stack">
@@ -130,18 +142,22 @@ export default function Profile({
                     ["Planting date", selected.planted],
                     ["Estimated stage", selected.stage],
                     ["Water source", selected.source],
-                    [
-                      "Canal turn (synthetic)",
-                      selected.source.includes("Canal")
-                        ? `${map.canal} · ${map.canalDay}`
-                        : "Not connected",
-                    ],
-                    [
-                      "Tubewell and cost",
-                      selected.source.includes("Tubewell")
-                        ? `${pkr(selected.rate)} / hour`
-                        : "Not available",
-                    ],
+                    ...(!connected
+                      ? [
+                          [
+                            "Canal turn (synthetic)",
+                            selected.source.includes("Canal")
+                              ? `${map.canal} · ${map.canalDay}`
+                              : "Not connected",
+                          ] as [string, string],
+                          [
+                            "Tubewell and cost",
+                            selected.source.includes("Tubewell")
+                              ? `${pkr(selected.rate)} / hour`
+                              : "Not available",
+                          ] as [string, string],
+                        ]
+                      : []),
                   ]}
                 />
               </Card>

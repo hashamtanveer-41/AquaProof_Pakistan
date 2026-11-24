@@ -3,6 +3,7 @@ import { ArrowRight, MapPin, UserRoundPlus, X } from "lucide-react";
 import { acres, measure, regionData, regions } from "@/domain/data";
 import type { Farmer, Field, Point, Region } from "@/domain/data";
 import { Button, Demo } from "@/components/ui";
+import { connected } from "@/domain/registry";
 
 export type Registration = { points?: Point[]; owner?: string };
 
@@ -17,10 +18,12 @@ export function RegisterModal({
   region: Region;
   farmers: Farmer[];
   close: () => void;
-  save: (owner: Farmer, field?: Pick<Field, "name" | "crop" | "soil" | "source">) => void;
+  save: (owner: Farmer, field?: Pick<Field, "name" | "crop" | "soil" | "source">) => Promise<void>;
 }) {
   const [ownerId, setOwnerId] = useState(model.owner ?? "");
   const [province, setProvince] = useState<Region>(region);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   const points = model.points;
   useEffect(() => {
@@ -34,33 +37,51 @@ export function RegisterModal({
       className="register-modal card"
       onCancel={(event) => {
         event.preventDefault();
-        close();
+        if (!saving) close();
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) close();
+        if (!saving && event.target === event.currentTarget) close();
       }}
     >
       <form
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
+          if (saving) return;
           const values = new FormData(event.currentTarget);
           const val = (name: string) => String(values.get(name) ?? "").trim();
           const existing = options.find((f) => f.id === ownerId);
           const name = existing?.name ?? val("name");
           if (!name || (points && !val("field"))) return;
-          save(
-            existing ?? {
-              id: "",
-              name,
-              email: val("email"),
-              phone: val("phone"),
-              village: val("village") || regionData[formRegion].village,
-              region: formRegion,
-            },
-            points
-              ? { name: val("field"), crop: val("crop"), soil: val("soil"), source: val("source") }
-              : undefined,
-          );
+          setSaving(true);
+          setError("");
+          try {
+            await save(
+              existing ?? {
+                id: "",
+                name,
+                email: val("email"),
+                phone: val("phone"),
+                village: connected
+                  ? val("village")
+                  : val("village") || regionData[formRegion].village,
+                region: formRegion,
+              },
+              points
+                ? {
+                    name: val("field"),
+                    crop: val("crop"),
+                    soil: val("soil"),
+                    source: val("source"),
+                  }
+                : undefined,
+            );
+          } catch (failure) {
+            setError(
+              failure instanceof Error ? failure.message : "Registration could not be saved.",
+            );
+          } finally {
+            setSaving(false);
+          }
         }}
       >
         <div className="modal-heading">
@@ -71,6 +92,7 @@ export function RegisterModal({
             type="button"
             className="bare-button"
             onClick={close}
+            disabled={saving}
             aria-label="Close registration"
           >
             <X size={20} />
@@ -79,9 +101,12 @@ export function RegisterModal({
         <h2>{points ? "Save farm boundary" : "Register a farmer"}</h2>
         <p>
           {points
-            ? `Link the mapped ${acres(measure(points))}-acre field to a farmer in ${regionData[region].district}.`
-            : "Add a farmer to the demo registry. You can link fields from the Farm Map."}
+            ? connected
+              ? "Link this field to a farmer. The saved boundary determines its area."
+              : `Link the mapped ${acres(measure(points))}-acre field to a farmer in ${regionData[region].district}.`
+            : "Add a farmer to the registry. You can link fields from the Farm Map."}
         </p>
+        {error && <p role="alert">{error}</p>}
         {points && (
           <label>
             Link to farmer
@@ -112,13 +137,20 @@ export function RegisterModal({
               <input
                 name="email"
                 type="email"
+                required={connected}
                 placeholder="farmer@example.com"
                 autoComplete="off"
               />
             </label>
             <label>
               Phone
-              <input name="phone" type="tel" placeholder="+92 300 000 0000" autoComplete="off" />
+              <input
+                name="phone"
+                type="tel"
+                placeholder="+92 300 000 0000"
+                autoComplete="off"
+                required={connected}
+              />
             </label>
             {points ? (
               <label>
@@ -140,7 +172,7 @@ export function RegisterModal({
               <input
                 name="village"
                 key={formRegion}
-                defaultValue={regionData[formRegion].village}
+                defaultValue={connected ? "" : regionData[formRegion].village}
                 required
                 pattern=".*\S.*"
               />
@@ -180,9 +212,11 @@ export function RegisterModal({
           </div>
         )}
         <footer>
-          <Demo>Session-only record</Demo>
-          <Button onClick={close}>Cancel</Button>
-          <Button type="submit" variant="primary">
+          {!connected && <Demo>Session-only record</Demo>}
+          <Button onClick={close} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
             {points ? "Save Farm" : "Register Farmer"} <ArrowRight size={15} />
           </Button>
         </footer>

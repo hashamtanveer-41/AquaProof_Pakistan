@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
+import { connected } from "@/domain/registry";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   Check,
@@ -25,7 +26,29 @@ const center = (pts: Point[]): Point => [
   pts.reduce((sum, p) => sum + p[1], 0) / pts.length,
 ];
 
-export function GeoCanvas({
+const LiveMap = lazy(() => import("./LiveMap"));
+
+export function GeoCanvas(
+  props: Parameters<typeof DemoCanvas>[0] & {
+    onDraftChange?: (points: Point[]) => void;
+  },
+) {
+  return connected ? (
+    <Suspense
+      fallback={
+        <div className="geo-canvas" role="status">
+          Loading map…
+        </div>
+      }
+    >
+      <LiveMap key={props.region} {...props} />
+    </Suspense>
+  ) : (
+    <DemoCanvas {...props} />
+  );
+}
+
+function DemoCanvas({
   region,
   fields,
   selected,

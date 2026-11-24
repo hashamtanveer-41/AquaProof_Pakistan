@@ -36,6 +36,13 @@ import { Brand, Card, Chip, Demo, Details, PageTitle } from "@/components/ui";
 import { FarmMap } from "@/features/map/FarmMap";
 import type { AdvisoryLog } from "@/pages/Advisory";
 import { RegisterModal, type Registration } from "@/features/registration/RegisterModal";
+import {
+  connected,
+  loadRegistry,
+  polygon,
+  registerFarmer,
+  updateBoundary,
+} from "@/domain/registry";
 
 const Crops = lazy(() => import("@/pages/Crops"));
 const Irrigation = lazy(() => import("@/pages/Irrigation"));
@@ -45,6 +52,7 @@ const Registry = lazy(() => import("@/pages/Registry"));
 const Reports = lazy(() => import("@/pages/Reports"));
 const Weather = lazy(() => import("@/pages/Weather"));
 const Advisory = lazy(() => import("@/pages/Advisory"));
+const LiveAdvisory = lazy(() => import("@/pages/LiveAdvisory"));
 
 const navigation = [
   {
@@ -76,10 +84,13 @@ const navigation = [
 export default function App() {
   const [page, setPage] = useState<Page>("map");
   const [region, setRegion] = useState<Region>("Punjab");
-  const [fields, setFields] = useState(initialFields);
-  const [farmers, setFarmers] = useState(initialFarmers);
-  const [fieldId, setFieldId] = useState(initialFields[0].id);
-  const [farmerId, setFarmerId] = useState(initialFarmers[0].id);
+  const [fields, setFields] = useState(connected ? [] : initialFields);
+  const [farmers, setFarmers] = useState(connected ? [] : initialFarmers);
+  const [fieldId, setFieldId] = useState(connected ? "" : initialFields[0].id);
+  const [farmerId, setFarmerId] = useState(connected ? "" : initialFarmers[0].id);
+  const [registryStatus, setRegistryStatus] = useState(connected ? "Loading registry…" : "");
+  const [registryAttempt, setRegistryAttempt] = useState(0);
+  const registryWrite = useRef(false);
   const [menu, setMenu] = useState("");
   const [mobile, setMobile] = useState(false);
   const [q, setQ] = useState("");
@@ -108,6 +119,24 @@ export default function App() {
   const pendingCount = farmers.filter(
     (f) => f.region === region && stage[f.id]?.stage !== "sent",
   ).length;
+
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    loadRegistry()
+      .then((data) => {
+        if (!active) return;
+        setFarmers(data.farmers);
+        setFields(data.fields);
+        setRegistryStatus("");
+      })
+      .catch(() => {
+        if (active) setRegistryStatus("The registry could not connect to the API.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [registryAttempt]);
 
   useEffect(() => {
     function shortcuts(e: KeyboardEvent) {
@@ -175,14 +204,34 @@ export default function App() {
     setRegion(found.region);
     setFieldId(
       fields.find((f) => f.farmerId === id)?.id ??
-        fields.find((f) => f.region === found.region)?.id ??
+        (connected ? "" : fields.find((f) => f.region === found.region)?.id) ??
         "",
     );
     setMenu("");
   };
-  const saveBoundary = () => {
-    if (!draft || !validBoundary(draft)) return;
+  const replaceField = (saved: Field) =>
+    setFields((existing) =>
+      existing.some((field) => field.id === saved.id)
+        ? existing.map((field) => (field.id === saved.id ? saved : field))
+        : [...existing, saved],
+    );
+  const saveBoundary = async () => {
+    if (!draft || (connected ? draft.length < 3 : !validBoundary(draft))) return;
     if (editing && mapField) {
+      if (connected) {
+        if (registryWrite.current) return;
+        registryWrite.current = true;
+        try {
+          replaceField(await updateBoundary(mapField.id, draft));
+          setDraft((current) => (current === draft ? null : current));
+          notify("Boundary saved.");
+        } catch (error) {
+          notify(error instanceof Error ? error.message : "The boundary could not be saved.");
+        } finally {
+          registryWrite.current = false;
+        }
+        return;
+      }
       setFields(
         fields.map((f) =>
           f.id === mapField.id ? { ...f, points: draft, acres: measure(draft) } : f,
@@ -193,10 +242,30 @@ export default function App() {
       notify("Boundary saved in this demo session.");
     } else setRegistration({ points: draft, owner: draftOwner });
   };
-  const saveRegistration = (
+  const saveRegistration = async (
     owner: Farmer,
     detail?: Pick<Field, "name" | "crop" | "soil" | "source">,
   ) => {
+    if (connected) {
+      const points = registration?.points;
+      const saved = await registerFarmer(
+        owner,
+        points && detail ? { ...detail, boundary: polygon(points) } : undefined,
+      );
+      setFarmers((existing) =>
+        existing.some((farmer) => farmer.id === saved.farmer.id)
+          ? existing
+          : [...existing, saved.farmer],
+      );
+      if (saved.field) replaceField(saved.field);
+      go("profile");
+      setFarmerId(saved.farmer.id);
+      setRegion(saved.farmer.region);
+      setFieldId(saved.field?.id ?? "");
+      setRegistration(undefined);
+      notify(saved.field ? "Farm saved and linked to the farmer profile." : "Farmer registered.");
+      return;
+    }
     const person = owner.id
       ? owner
       : {
@@ -484,168 +553,225 @@ export default function App() {
           </div>
         </header>
         <main className="content">
-          <Suspense
-            fallback={
-              <div className="card surface" role="status">
-                Loading workspace…
-              </div>
-            }
-          >
-            {page === "map" && (
-              <FarmMap
-                region={region}
-                setRegion={pickRegion}
-                fields={fields}
-                farmers={farmers}
-                field={mapField}
-                selectField={openField}
-                onProfile={() => mapField && openField(mapField.id, "profile")}
-                onRegister={() => setRegistration({})}
-                draft={draft}
-                setDraft={setDraft}
-                editing={editing}
-                setEditing={setEditing}
-                onSave={saveBoundary}
-                notify={notify}
-              />
-            )}
-            {page === "overview" && (
-              <Overview
-                region={region}
-                fields={fields}
-                farmers={farmers}
-                open={openField}
-                go={go}
-                pending={pendingCount}
-              />
-            )}
-            {page === "registry" && (
-              <Registry
-                farmers={farmers}
-                fields={fields}
-                open={(id) => openFarmer(id, "profile")}
-                onRegister={() => setRegistration({})}
-              />
-            )}
-            {page === "profile" && farmer && (
-              <Profile
-                farmer={farmer}
-                fields={fields}
-                field={field}
-                open={openField}
-                go={go}
-                draw={() => {
-                  go("map");
-                  setDraftOwner(farmer.id);
-                  setDraft([]);
-                }}
-                advisoryCount={stage[farmer.id]?.stage === "sent" ? 1 : 0}
-              />
-            )}
-            {page === "crops" && (
-              <Crops key={region} fields={fields} region={region} open={openField} />
-            )}
-            {page === "irrigation" && mapField && (
-              <Irrigation key={mapField.id} field={mapField} fields={fields} open={openField} />
-            )}
-            {page === "weather" && mapField && (
-              <Weather region={region} fields={fields} field={mapField} open={openField} />
-            )}
-            {page === "advisory" && (
-              <Advisory
-                farmers={farmers}
-                fields={fields}
-                farmer={farmer}
-                pick={openFarmer}
-                log={stage}
-                setLog={(id, value) => setStage((old) => ({ ...old, [id]: value }))}
-                notify={notify}
-                onApprove={(person, plot, reply) => {
-                  setFields((old) =>
-                    old.map((f) =>
-                      f.id === plot.id
-                        ? {
-                            ...f,
-                            history: [
-                              ...f.history,
-                              {
-                                date: "19 Mar 2026",
-                                label: "Irrigation reported by email",
-                                detail: `${person.id === "FMR-0108" || plot.source.includes("Tubewell") ? "Tubewell · 2 hours" : "Method and duration not provided"} · officer reviewed in demo`,
-                              },
-                            ].sort((a, b) => Date.parse(a.date) - Date.parse(b.date)),
-                          }
-                        : f,
-                    ),
-                  );
-                  setStage((old) => ({
-                    ...old,
-                    [person.id]: { stage: "sent", fieldId: plot.id, reply },
-                  }));
-                }}
-              />
-            )}
-            {page === "reports" && (
-              <Reports fields={fields} farmers={farmers} open={openField} advisoryCount={count} />
-            )}
-            {page === "settings" && (
-              <>
-                <PageTitle
-                  eyebrow="WORKSPACE PREFERENCES"
-                  title="Settings"
-                  description="Configure your demonstration workspace and review its data policy."
+          {registryStatus && (
+            <div className="card surface" role="status">
+              {registryStatus}
+              {registryStatus !== "Loading registry…" && (
+                <button
+                  onClick={() => {
+                    setRegistryStatus("Loading registry…");
+                    setRegistryAttempt((attempt) => attempt + 1);
+                  }}
                 >
-                  <Demo />
-                </PageTitle>
-                <div className="grid-2">
-                  <Card title="Officer profile" action={<Chip dot>Demo account</Chip>}>
-                    <Details
-                      rows={[
-                        ["Name", "Ayesha Khan"],
-                        ["Role", "Agriculture Officer"],
-                        ["Department", "Agriculture Department"],
-                        ["Current district", district.district],
-                      ]}
-                    />
-                  </Card>
-                  <Card title="Accessibility & localization" action={<Globe2 size={19} />}>
-                    <div className="settings-toggles">
-                      <label>
-                        <span>
-                          <strong>Right-to-left layout preview</strong>
-                          <small>Test future Urdu layout. Interface copy remains in English.</small>
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={rtl}
-                          onChange={(e) => setRtl(e.target.checked)}
-                        />
-                      </label>
-                      <label>
-                        <span>
-                          <strong>Increase text size</strong>
-                          <small>Increase the size of workspace content.</small>
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={large}
-                          onChange={(e) => setLarge(e.target.checked)}
-                        />
-                      </label>
-                    </div>
-                  </Card>
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {!registryStatus && (
+            <Suspense
+              fallback={
+                <div className="card surface" role="status">
+                  Loading workspace…
                 </div>
-                <Card title="Help & data policy">
-                  <p className="body-copy">
-                    AquaProof uses synthetic records, demonstration imagery, and simulated advisory
-                    delivery. Changes are held only for this browser tab session and reset on
-                    reload. Use the Farm Map to register fields, Irrigation Intelligence to compare
-                    scenarios, and AI Advisory Center for officer-reviewed replies.
-                  </p>
+              }
+            >
+              {page === "map" && (
+                <FarmMap
+                  region={region}
+                  setRegion={pickRegion}
+                  fields={fields}
+                  farmers={farmers}
+                  field={mapField}
+                  selectField={openField}
+                  onProfile={() => mapField && openField(mapField.id, "profile")}
+                  onRegister={() => setRegistration({})}
+                  draft={draft}
+                  setDraft={setDraft}
+                  editing={editing}
+                  setEditing={setEditing}
+                  onSave={saveBoundary}
+                  notify={notify}
+                />
+              )}
+              {page === "overview" && connected && (
+                <Card title="Registry overview">
+                  <Details
+                    rows={[
+                      [
+                        "Registered farmers",
+                        farmers.filter((farmer) => farmer.region === region).length,
+                      ],
+                      ["Mapped fields", fields.filter((field) => field.region === region).length],
+                    ]}
+                  />
                 </Card>
-              </>
-            )}
-          </Suspense>
+              )}
+              {page === "overview" && !connected && (
+                <Overview
+                  region={region}
+                  fields={fields}
+                  farmers={farmers}
+                  open={openField}
+                  go={go}
+                  pending={pendingCount}
+                />
+              )}
+              {page === "registry" && (
+                <Registry
+                  farmers={farmers}
+                  fields={fields}
+                  open={(id) => openFarmer(id, "profile")}
+                  onRegister={() => setRegistration({})}
+                />
+              )}
+              {page === "profile" && farmer && (
+                <Profile
+                  farmer={farmer}
+                  fields={fields}
+                  field={field}
+                  open={openField}
+                  go={go}
+                  draw={() => {
+                    go("map");
+                    setDraftOwner(farmer.id);
+                    setDraft([]);
+                  }}
+                  advisoryCount={stage[farmer.id]?.stage === "sent" ? 1 : 0}
+                />
+              )}
+              {page === "crops" && (
+                <Crops
+                  key={region}
+                  fields={fields}
+                  region={region}
+                  open={openField}
+                  onSeasonSaved={replaceField}
+                />
+              )}
+              {page === "irrigation" && !connected && mapField && (
+                <Irrigation key={mapField.id} field={mapField} fields={fields} open={openField} />
+              )}
+              {page === "weather" && !connected && mapField && (
+                <Weather region={region} fields={fields} field={mapField} open={openField} />
+              )}
+              {page === "advisory" && connected && (
+                <LiveAdvisory
+                  fields={fields}
+                  selectedFieldId={fieldId}
+                  onFieldUpdated={replaceField}
+                />
+              )}
+              {page === "advisory" && !connected && (
+                <Advisory
+                  farmers={farmers}
+                  fields={fields}
+                  farmer={farmer}
+                  pick={openFarmer}
+                  log={stage}
+                  setLog={(id, value) => setStage((old) => ({ ...old, [id]: value }))}
+                  notify={notify}
+                  onApprove={(person, plot, reply) => {
+                    setFields((old) =>
+                      old.map((f) =>
+                        f.id === plot.id
+                          ? {
+                              ...f,
+                              history: [
+                                ...f.history,
+                                {
+                                  date: "19 Mar 2026",
+                                  label: "Irrigation reported by email",
+                                  detail: `${person.id === "FMR-0108" || plot.source.includes("Tubewell") ? "Tubewell · 2 hours" : "Method and duration not provided"} · officer reviewed in demo`,
+                                },
+                              ].sort((a, b) => Date.parse(a.date) - Date.parse(b.date)),
+                            }
+                          : f,
+                      ),
+                    );
+                    setStage((old) => ({
+                      ...old,
+                      [person.id]: { stage: "sent", fieldId: plot.id, reply },
+                    }));
+                  }}
+                />
+              )}
+              {connected && (page === "irrigation" || page === "weather" || page === "reports") && (
+                <Card title={title}>
+                  <p>Live data for this page is pending integration.</p>
+                </Card>
+              )}
+              {page === "reports" && !connected && (
+                <Reports fields={fields} farmers={farmers} open={openField} advisoryCount={count} />
+              )}
+              {page === "settings" && (
+                <>
+                  <PageTitle
+                    eyebrow="WORKSPACE PREFERENCES"
+                    title="Settings"
+                    description="Configure your demonstration workspace and review its data policy."
+                  >
+                    <Demo />
+                  </PageTitle>
+                  <div className="grid-2">
+                    <Card title="Officer profile" action={<Chip dot>Demo account</Chip>}>
+                      <Details
+                        rows={[
+                          ["Name", "Ayesha Khan"],
+                          ["Role", "Agriculture Officer"],
+                          ["Department", "Agriculture Department"],
+                          ["Current district", district.district],
+                        ]}
+                      />
+                    </Card>
+                    <Card title="Accessibility & localization" action={<Globe2 size={19} />}>
+                      <div className="settings-toggles">
+                        <label>
+                          <span>
+                            <strong>Right-to-left layout preview</strong>
+                            <small>
+                              Test future Urdu layout. Interface copy remains in English.
+                            </small>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={rtl}
+                            onChange={(e) => setRtl(e.target.checked)}
+                          />
+                        </label>
+                        <label>
+                          <span>
+                            <strong>Increase text size</strong>
+                            <small>Increase the size of workspace content.</small>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={large}
+                            onChange={(e) => setLarge(e.target.checked)}
+                          />
+                        </label>
+                      </div>
+                    </Card>
+                  </div>
+                  <Card title="Help & data policy">
+                    <p className="body-copy">
+                      {connected ? (
+                        "Registry changes, crop seasons, and correspondence are saved to the connected database."
+                      ) : (
+                        <>
+                          AquaProof uses synthetic records, demonstration imagery, and simulated
+                          advisory delivery. Changes are held only for this browser tab session and
+                          reset on reload. Use the Farm Map to register fields, Irrigation
+                          Intelligence to compare scenarios, and AI Advisory Center for
+                          officer-reviewed replies.
+                        </>
+                      )}
+                    </p>
+                  </Card>
+                </>
+              )}
+            </Suspense>
+          )}
         </main>
       </div>
       {registration && (

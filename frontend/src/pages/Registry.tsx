@@ -3,6 +3,7 @@ import { ArrowRight, Search, Users } from "lucide-react";
 import { acres, regionData, regions } from "@/domain/data";
 import type { Farmer, Field } from "@/domain/data";
 import { Button, Card, Chip, Demo, Empty, PageTitle } from "@/components/ui";
+import { connected } from "@/domain/registry";
 
 export default function Registry({
   farmers,
@@ -43,8 +44,8 @@ export default function Registry({
       </PageTitle>
       <Card
         title="Registered farmers"
-        subtitle={`${filtered.length} of ${farmers.length} demo records`}
-        action={<Demo />}
+        subtitle={`${filtered.length} of ${farmers.length} ${connected ? "records" : "demo records"}`}
+        action={connected ? undefined : <Demo />}
       >
         <div className="filters">
           <label className="label-inline search">
@@ -69,18 +70,20 @@ export default function Registry({
               <option key={r}>{r}</option>
             ))}
           </select>
-          <select
-            aria-label="District"
-            value={district}
-            onChange={(e) => setDistrict(e.target.value)}
-          >
-            <option value="">All districts</option>
-            {regions
-              .filter((r) => !province || r === province)
-              .map((r) => (
-                <option key={r}>{regionData[r].district}</option>
-              ))}
-          </select>
+          {!connected && (
+            <select
+              aria-label="District"
+              value={district}
+              onChange={(e) => setDistrict(e.target.value)}
+            >
+              <option value="">All districts</option>
+              {regions
+                .filter((r) => !province || r === province)
+                .map((r) => (
+                  <option key={r}>{regionData[r].district}</option>
+                ))}
+            </select>
+          )}
           <select aria-label="Crop" value={crop} onChange={(e) => setCrop(e.target.value)}>
             <option value="">All crops</option>
             {[...new Set(fields.map((f) => f.crop))].map((c) => (
@@ -104,7 +107,7 @@ export default function Registry({
               <thead>
                 <tr>
                   <th>Farmer</th>
-                  <th>District</th>
+                  <th>{connected ? "Province" : "District"}</th>
                   <th>Village</th>
                   <th>Fields</th>
                   <th>Total area</th>
@@ -134,7 +137,7 @@ export default function Registry({
                           </span>
                         </button>
                       </td>
-                      <td>{regionData[f.region].district}</td>
+                      <td>{connected ? f.region : regionData[f.region].district}</td>
                       <td>{f.village}</td>
                       <td>{plots.length}</td>
                       <td>{acres(plots.reduce((total, p) => total + p.acres, 0))} ac</td>
