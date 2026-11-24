@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowDownToLine, CalendarDays, Droplets, Wallet } from "lucide-react";
-import { number, pkr, regionData, regions } from "@/domain/data";
+import { number, pkr, demoRegion, regions } from "@/domain/data";
 import type { Farmer, Field, SelectField } from "@/domain/data";
 import { Button, Card, Demo, LineChart, PageTitle, Stat, TextAction } from "@/components/ui";
 
@@ -157,12 +157,12 @@ export default function Reports({
                     <TextAction onClick={() => open(f.id, "profile")}>{f.name}</TextAction>
                     <small>{owner}</small>
                   </td>
-                  <td>{regionData[f.region].district}</td>
+                  <td>{demoRegion(f.region).district}</td>
                   <td>
                     {view === "Crop seasons"
                       ? f.crop
                       : view === "Weather & canal"
-                        ? regionData[f.region].canal
+                        ? demoRegion(f.region).canal
                         : view === "Advisories"
                           ? "Simulated email"
                           : `${number(water)} m³`}
@@ -171,7 +171,7 @@ export default function Reports({
                     {view === "Crop seasons" ? (
                       f.previous
                     ) : view === "Weather & canal" ? (
-                      `${regionData[f.region].canalDay} · synthetic`
+                      `${demoRegion(f.region).canalDay} · synthetic`
                     ) : view === "Advisories" ? (
                       <TextAction onClick={() => open(f.id, "advisory")}>Open thread</TextAction>
                     ) : (

@@ -16,7 +16,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { acres, localWeather, measure, regionData, validBoundary } from "@/domain/data";
+import { acres, localWeather, measure, demoRegion, validBoundary } from "@/domain/data";
 import type { Field, Point, Region } from "@/domain/data";
 import { Button } from "@/components/ui";
 
@@ -31,6 +31,7 @@ const LiveMap = lazy(() => import("./LiveMap"));
 export function GeoCanvas(
   props: Parameters<typeof DemoCanvas>[0] & {
     onDraftChange?: (points: Point[]) => void;
+    target?: Point;
   },
 ) {
   return connected ? (
@@ -41,7 +42,7 @@ export function GeoCanvas(
         </div>
       }
     >
-      <LiveMap key={props.region} {...props} />
+      <LiveMap {...props} />
     </Suspense>
   ) : (
     <DemoCanvas {...props} />
@@ -87,7 +88,7 @@ function DemoCanvas({
   weather?: boolean;
   editing?: boolean;
 }) {
-  const map = regionData[region];
+  const map = demoRegion(region);
   const viewport = useRef<HTMLDivElement>(null);
   const plane = useRef<HTMLDivElement>(null);
   const gesture = useRef<{ x: number; y: number; left: number; top: number }>(null);

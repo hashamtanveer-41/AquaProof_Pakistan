@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { acres, regionData } from "@/domain/data";
+import { acres, demoRegion } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
 import { Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
 import { connected, startSeason } from "@/domain/registry";
@@ -18,8 +18,8 @@ export default function Crops({
   const [crop, setCrop] = useState("");
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
-  const filtered = fields.filter((f) => f.region === region && (!crop || f.crop === crop));
-  const regionFields = fields.filter((field) => field.region === region);
+  const regionFields = fields.filter((field) => !region || field.region === region);
+  const filtered = regionFields.filter((field) => !crop || field.crop === crop);
   return (
     <>
       <PageTitle
@@ -92,7 +92,7 @@ export default function Crops({
       )}
       <Card
         title="Current crop season"
-        subtitle={connected ? region : regionData[region].district}
+        subtitle={connected ? region || "All locations" : demoRegion(region).district}
         action={
           <select
             aria-label="Filter by crop"

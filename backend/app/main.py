@@ -11,6 +11,7 @@ from psycopg import OperationalError
 
 from .communications import deliver_due, import_replies, parse_pending, router as communications_router
 from .registry import router as registry_router
+from .science.routes import locations, router as science_router
 
 
 @asynccontextmanager
@@ -29,6 +30,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AquaProof Pakistan API", lifespan=lifespan)
 app.include_router(registry_router)
 app.include_router(communications_router)
+app.include_router(science_router)
+app.include_router(locations)
 
 
 @app.exception_handler(OperationalError)

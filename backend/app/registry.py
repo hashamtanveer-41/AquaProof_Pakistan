@@ -7,10 +7,10 @@ from psycopg.errors import CheckViolation, UniqueViolation
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 
 from .database import connect
+from .science.crops import estimated_stage
 
 router = APIRouter(prefix="/api", tags=["registry"])
 Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
-Region = Literal["Punjab", "Khyber Pakhtunkhwa"]
 Longitude = Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)]
 Latitude = Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)]
 
@@ -23,7 +23,7 @@ class FarmerInput(Input):
     name: Label
     email: EmailStr
     phone: Label
-    region: Region
+    region: Label
     village: Label
 
 
@@ -106,10 +106,14 @@ def farmer_by_id(connection, farmer_id):
 
 
 def field_by_id(connection, field_id):
-    return require(
+    return with_stage(require(
         connection.execute(FIELD_QUERY + " WHERE f.id = %s", (field_id,)).fetchone(),
         "Field",
-    )
+    ))
+
+
+def with_stage(field):
+    return {**field, "stage": estimated_stage(field["seasons"])}
 
 
 def create_farmer(connection, farmer):
@@ -126,7 +130,7 @@ def get_registry():
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         return {
             "farmers": connection.execute("SELECT * FROM farmers ORDER BY name, id").fetchall(),
-            "fields": connection.execute(FIELD_QUERY + " ORDER BY f.name, f.id").fetchall(),
+            "fields": [with_stage(row) for row in connection.execute(FIELD_QUERY + " ORDER BY f.name, f.id")],
         }
 
 

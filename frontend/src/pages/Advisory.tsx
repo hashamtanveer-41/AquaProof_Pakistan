@@ -11,7 +11,7 @@ import {
   Send,
   Sparkles,
 } from "lucide-react";
-import { localWeather, pkr, regionData } from "@/domain/data";
+import { localWeather, pkr, demoRegion } from "@/domain/data";
 import type { Farmer, Field } from "@/domain/data";
 import { Button, Card, Chip, Demo, Empty, PageTitle } from "@/components/ui";
 
@@ -47,7 +47,7 @@ export default function Advisory({
   const [forceError, setForceError] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const owners = farmers.filter((f) =>
-    `${f.name} ${f.village} ${regionData[f.region].district}`
+    `${f.name} ${f.village} ${demoRegion(f.region).district}`
       .toLowerCase()
       .includes(q.toLowerCase()),
   );
@@ -64,7 +64,7 @@ export default function Advisory({
   const field =
     plots.find((f) => f.id === (farmer ? overrides[farmer.id] || state.fieldId : undefined)) ??
     automatic;
-  const map = field ? localWeather(field) : farmer ? regionData[farmer.region] : undefined;
+  const map = field ? localWeather(field) : farmer ? demoRegion(farmer.region) : undefined;
   const usedPump = farmer?.id === "FMR-0108" || Boolean(field?.source.includes("Tubewell"));
   const depth = field && usedPump ? (320 / (field.acres * 4.0468564)).toFixed(1) : undefined;
   const reply =
@@ -123,7 +123,7 @@ export default function Advisory({
               <span>
                 <strong>{f.name}</strong>
                 <small>
-                  {regionData[f.region].district} ·{" "}
+                  {demoRegion(f.region).district} ·{" "}
                   {fields.find((p) => p.farmerId === f.id)?.crop ?? "No field"}
                 </small>
                 <em>

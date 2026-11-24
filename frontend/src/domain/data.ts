@@ -1,4 +1,4 @@
-export type Region = "Punjab" | "Khyber Pakhtunkhwa";
+export type Region = string;
 export type Point = [number, number];
 export type Page =
   | "overview"
@@ -38,7 +38,7 @@ export type Field = {
 };
 
 export const regions = ["Punjab", "Khyber Pakhtunkhwa"] as const;
-export const regionData = {
+const regionData = {
   Punjab: {
     district: "Faisalabad",
     short: "Punjab",
@@ -78,6 +78,10 @@ export const regionData = {
     moisture: [32, 35, 32, 26, 28, 31, 32],
   },
 };
+
+export function demoRegion(region: Region) {
+  return region === "Khyber Pakhtunkhwa" ? regionData[region] : regionData.Punjab;
+}
 
 export const initialFarmers: Farmer[] = [
   {
@@ -381,7 +385,7 @@ export const initialFields: Field[] = [
 ];
 
 export function localWeather(field: Field) {
-  const baseline = regionData[field.region];
+  const baseline = demoRegion(field.region);
   const offset =
     field.village === baseline.village
       ? 0

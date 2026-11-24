@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, Search, Users } from "lucide-react";
-import { acres, regionData, regions } from "@/domain/data";
+import { acres, demoRegion, regions } from "@/domain/data";
 import type { Farmer, Field } from "@/domain/data";
 import { Button, Card, Chip, Demo, Empty, PageTitle } from "@/components/ui";
 import { connected } from "@/domain/registry";
@@ -26,7 +26,7 @@ export default function Registry({
     return (
       `${f.name} ${f.id} ${f.village} ${f.email}`.toLowerCase().includes(q.toLowerCase()) &&
       (!province || f.region === province) &&
-      (!district || regionData[f.region].district === district) &&
+      (!district || demoRegion(f.region).district === district) &&
       ((!crop && !source) ||
         plots.some((p) => (!crop || p.crop === crop) && (!source || p.source === source)))
     );
@@ -58,15 +58,18 @@ export default function Registry({
             />
           </label>
           <select
-            aria-label="Province"
+            aria-label={connected ? "Region" : "Province"}
             value={province}
             onChange={(e) => {
               setProvince(e.target.value);
               setDistrict("");
             }}
           >
-            <option value="">All provinces</option>
-            {regions.map((r) => (
+            <option value="">{connected ? "All regions" : "All provinces"}</option>
+            {(connected
+              ? [...new Set(farmers.map((farmer) => farmer.region).sort())]
+              : regions
+            ).map((r) => (
               <option key={r}>{r}</option>
             ))}
           </select>
@@ -80,7 +83,7 @@ export default function Registry({
               {regions
                 .filter((r) => !province || r === province)
                 .map((r) => (
-                  <option key={r}>{regionData[r].district}</option>
+                  <option key={r}>{demoRegion(r).district}</option>
                 ))}
             </select>
           )}
@@ -107,7 +110,7 @@ export default function Registry({
               <thead>
                 <tr>
                   <th>Farmer</th>
-                  <th>{connected ? "Province" : "District"}</th>
+                  <th>{connected ? "Region" : "District"}</th>
                   <th>Village</th>
                   <th>Fields</th>
                   <th>Total area</th>
@@ -137,7 +140,7 @@ export default function Registry({
                           </span>
                         </button>
                       </td>
-                      <td>{connected ? f.region : regionData[f.region].district}</td>
+                      <td>{connected ? f.region : demoRegion(f.region).district}</td>
                       <td>{f.village}</td>
                       <td>{plots.length}</td>
                       <td>{acres(plots.reduce((total, p) => total + p.acres, 0))} ac</td>

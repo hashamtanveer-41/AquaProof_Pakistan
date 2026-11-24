@@ -37,7 +37,7 @@
 
 ## ⚡ Overview
 
-**Current status.** Connected mode supports farmer registration, geographic boundaries and area, crop seasons, and scheduled email with reply review. Run it with Docker Compose and the React frontend. Scientific irrigation, weather, and canal forecasting remain planned.
+**Current status.** Connected mode supports geographic field registration, crop seasons, scheduled email, field-level weather, and irrigation scenarios. Search the live map by place or coordinates and register a farmer outside the original demo regions. Weather and irrigation calculations use the saved field boundary.
 
 **AquaProof Pakistan** gives government agricultural officers a digital record of every registered farm and uses location-specific weather data, FAO-56 scientific simulation, and AI communication to deliver timely, personalized irrigation and crop-management guidance — even to farmers who don't use smartphones.
 
@@ -67,13 +67,13 @@ Officers manage farms through a central web dashboard. Farmers receive recommend
 
 ### 2. 🌱 Farmer-Specific Crop Monitoring
 - System records crop type, variety, planting date, soil profile, and irrigation source per field.
-- Crop growth stage is estimated daily from planting date + weather data — no manual field surveys required.
+- Crop growth stage is estimated from planting date and the PI-Advisor crop calendar. Local weather drives daily crop water demand.
 - Full seasonal history is preserved after harvest. Officers can review past crop rotations and irrigation events without overwriting older records.
 
 ### 3. 💧 Scientific Irrigation & Smart Decision Engine
 - Implements **FAO-56 crop-water balance** methodology (adapted from PI-Advisor) — the same standard used by international agricultural organizations.
 - Answers four questions for every farm: how much water is needed, when to irrigate, whether to use canal or tubewell, and what happens if the forecast changes.
-- Scenario optimizer (SciPy) evaluates three strategies — wait for canal, pump now, or partial hybrid — and selects the optimal decision based on the farm's registered constraints.
+- The SciPy optimizer compares no irrigation, canal only, tubewell only, and mixed supply where configured. It prioritizes modeled crop stress and then pumping cost.
 - Water volume formula: `Volume (m³) = Depth (mm) × Area (m²) ÷ 1000`
 
 ### 4. 📧 Email Advisories and Reply Review
@@ -285,6 +285,22 @@ pnpm dev
 
 In Bash, set the variable with `export VITE_API_URL=http://127.0.0.1:8000`. With the variable unset, the frontend runs its standalone demo. The connected registry starts empty and loads data from the API. The map uses MapLibre GL JS and Terra Draw with an attributed OpenStreetMap basemap. Set `VITE_MAP_TILES` to a compatible raster tile URL template to use another provider.
 
+### Field weather and irrigation
+
+- In Farm Map, enter a place name or decimal coordinates in `latitude, longitude` order. Pan or zoom to the parcel, draw its boundary, and link it to a farmer. A farmer's region is a label for filtering records. The weather API queries a point inside the parcel stored in PostGIS.
+- Weather & Canal Data shows a seven-day forecast with reference ET from [Open-Meteo](https://open-meteo.com/en/docs) and daily historical observations from [NASA POWER](https://power.larc.nasa.gov/docs/services/api/temporal/daily/). An unavailable provider or measurement is reported as such.
+- In Crop Monitoring, save the crop and planting date. In Irrigation Intelligence, enter the field's measured root-zone and surface water parameters, current depletion and application efficiency. Add the farmer's first Warabandi turn date, recurrence, duration and flow, or the tubewell flow, daily hours and pumping cost, as appropriate.
+- Run a baseline or change rainfall, canal timing or pumping cost. Root-zone calculations use the PI-Advisor crop calendar and an FAO-56 balance with estimated surface evaporation. The plan is a seven-day, field-level estimate. Canal limits come from the entered roster and flow rather than telemetry, and irrigation windows are modeled at daily resolution.
+- **Explain this plan with AI** uses the configured OpenAI-compatible API. It sends the modeled plan and weather context without farmer contact details. The explanation stays separate from the calculated quantities and costs.
+
+To add two clearly labeled synthetic registry examples in Sindh and Balochistan, run:
+
+```bash
+docker compose exec api python -m app.science.demo
+```
+
+The examples use live weather for their sample coordinates.
+
 ### Email Testing with Mailpit
 
 The Advisory Center queues an officer-approved email immediately or for a selected time. APScheduler sends due messages through SMTP and records delivery status. The default Compose configuration delivers locally to [Mailpit](http://localhost:8025).
@@ -311,9 +327,13 @@ The local API and Mailpit UI bind to loopback. This development setup has no off
 | `GET` | `/api/fields/{id}` | Retrieve field with GeoJSON boundary |
 | `PATCH` | `/api/fields/{id}` | Update registered field |
 | `POST` | `/api/crop-seasons?field_id={id}` | Start a new crop cycle for a field |
-| `GET` | `/api/fields/{id}/weather` | Planned location-specific weather from Open-Meteo |
-| `POST` | `/api/fields/{id}/simulate` | Planned FAO-56 irrigation simulation |
-| `POST` | `/api/fields/{id}/optimize` | Planned canal vs. tubewell decision with cost comparison |
+| `GET` | `/api/locations?q={place}` | Look up map coordinates by place name |
+| `GET` | `/api/fields/{id}/weather` | Open-Meteo forecast and registered canal capacity |
+| `GET` | `/api/fields/{id}/weather/history` | NASA POWER daily observations for the field |
+| `GET / PUT` | `/api/fields/{id}/irrigation-settings` | Read or save soil water and supply inputs |
+| `POST` | `/api/fields/{id}/simulate` | Run a field-specific irrigation scenario |
+| `POST` | `/api/fields/{id}/optimize` | Compare irrigation strategies, pumping costs, and crop stress |
+| `POST` | `/api/fields/{id}/intelligence` | Explain a calculated plan using the configured model |
 | `GET` | `/api/fields/{id}/advisories` | Retrieve advisory history for a field |
 | `POST` | `/api/advisories` | Approve and queue an advisory email |
 | `POST` | `/api/advisories/{id}/send` | Retry a failed delivery |
@@ -329,6 +349,8 @@ Interactive documentation available at `http://localhost:8000/docs`.
 ### Verify connected workflows
 
 Use test records. Register a farmer and draw a field in the connected dashboard, then reload and check the saved boundary and area. Edit the polygon and confirm that the area updates. Use Crop Monitoring to start a season and check the previous crop on the farmer profile. Approve a test advisory, confirm its delivery in Mailpit, then record a reply and review the conversation.
+
+With the backend dependencies installed, run the irrigation model tests from `backend/` with `python -m unittest discover -s tests -v`.
 
 ### Frontend Production Build
 
@@ -348,6 +370,8 @@ pnpm build
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 The frontend ships license notices for [MapLibre GL JS](frontend/public/licenses/maplibre-gl.txt) and [Terra Draw, including its MapLibre adapter](frontend/public/licenses/terra-draw.txt). Basemap data attribution appears on the map.
+
+The crop coefficients and stage lengths come from PI-Advisor and the soil water calculation adapts its published method. [Pinned PI-Advisor source](https://github.com/wateraccounting/PI-Advisor/tree/18197955f9ad2f74da0a73de240ff448fa67c8dd) · [MIT license notice](backend/app/science/PI-Advisor-LICENSE.txt)
 
 ---
 

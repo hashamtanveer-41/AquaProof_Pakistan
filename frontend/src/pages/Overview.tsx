@@ -1,5 +1,5 @@
 import { CloudRain, Droplets, History, MapPin, Sprout, Users, Wallet } from "lucide-react";
-import { acres, forecastDays, pkr, regionData } from "@/domain/data";
+import { acres, forecastDays, pkr, demoRegion } from "@/domain/data";
 import type { Farmer, Field, Page, Region, SelectField } from "@/domain/data";
 import { GeoCanvas } from "@/features/map/GeoCanvas";
 import { Button, Card, Demo, LineChart, PageTitle, Stat, TextAction } from "@/components/ui";
@@ -19,7 +19,7 @@ export default function Overview({
   go: (page: Page) => void;
   pending: number;
 }) {
-  const map = regionData[region];
+  const map = demoRegion(region);
   const farms = fields.filter((f) => f.region === region);
   const owners = farmers.filter((f) => f.region === region);
   const data = Object.entries(

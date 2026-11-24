@@ -10,30 +10,26 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from "terra-draw";
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Field, Point, Region } from "@/domain/data";
+import type { Field, Point } from "@/domain/data";
 import { polygon } from "@/domain/registry";
 
-const centers: Record<Region, Point> = {
-  Punjab: [73.079, 31.418],
-  "Khyber Pakhtunkhwa": [72.0404, 34.1986],
-};
 const empty = { type: "FeatureCollection" as const, features: [] };
 setWorkerUrl(workerUrl);
 
 export default function LiveMap({
-  region,
   fields,
   selected,
   onSelect,
   draft,
   onDraftChange,
+  target,
 }: {
-  region: Region;
   fields: Field[];
   selected?: string;
   onSelect: (id: string) => void;
   draft?: Point[];
   onDraftChange?: (points: Point[]) => void;
+  target?: Point;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const refs = useRef({ onSelect, onDraftChange, draft });
@@ -51,8 +47,9 @@ export default function LiveMap({
     try {
       instance = new Map({
         container: container.current,
-        center: centers[region],
-        zoom: 12,
+        center: [0, 24],
+        zoom: 2,
+        renderWorldCopies: false,
         style: {
           version: 8,
           sources: {
@@ -105,7 +102,7 @@ export default function LiveMap({
       setMap(undefined);
       instance.remove();
     };
-  }, [region]);
+  }, []);
 
   useEffect(() => {
     if (!map) return;
@@ -129,6 +126,10 @@ export default function LiveMap({
     selectedPoints.forEach((point) => bounds.extend(point));
     map.fitBounds(bounds, { padding: 44, maxZoom: 18, duration: 0 });
   }, [map, selectedPoints]);
+
+  useEffect(() => {
+    if (map && target) map.jumpTo({ center: target, zoom: 15 });
+  }, [map, target]);
 
   useEffect(() => {
     if (!map || !drawing) return;

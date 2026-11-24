@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -18,11 +18,28 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { acres, measure, regionData, regions, validBoundary } from "@/domain/data";
+import { acres, measure, demoRegion, regions, validBoundary } from "@/domain/data";
 import type { Farmer, Field, Point, Region } from "@/domain/data";
 import { Button, Chip, Demo, Empty, PageTitle, Stat } from "@/components/ui";
 import { GeoCanvas } from "./GeoCanvas";
-import { connected, polygon } from "@/domain/registry";
+import { connected, polygon, request } from "@/domain/registry";
+
+type Place = {
+  id: number;
+  name: string;
+  region: string | null;
+  country: string | null;
+  latitude: number;
+  longitude: number;
+};
+
+function coordinatePair(value: string): Point | undefined {
+  const match = /^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/.exec(value.trim());
+  if (!match) return;
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  if (Math.abs(latitude) <= 85.05 && Math.abs(longitude) <= 180) return [longitude, latitude];
+}
 
 export function FarmMap({
   region,
@@ -64,14 +81,19 @@ export function FarmMap({
   const [full, setFull] = useState(false);
   const [view, setView] = useState(0);
   const [activePoint, setActivePoint] = useState<number | null>(null);
-  const map = regionData[region];
-  const visible = fields.filter((f) => f.region === region);
+  const [target, setTarget] = useState<Point>();
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [placeStatus, setPlaceStatus] = useState("");
+  const [placeQuery, setPlaceQuery] = useState("");
+  const placeRequest = useRef(0);
+  const map = demoRegion(region);
+  const visible = fields.filter((f) => !region || f.region === region);
   const owner = farmers.find((f) => f.id === field?.farmerId);
   const total = visible.reduce((sum, f) => sum + f.acres, 0);
   const q = query.trim().toLowerCase();
-  const locations = regions
+  const locations = (connected ? [] : regions)
     .flatMap((r) => {
-      const item = regionData[r];
+      const item = demoRegion(r);
       return [{ name: `${item.village}, ${item.district}`, sub: `${r} · ${item.center}`, r }];
     })
     .filter(
@@ -103,10 +125,38 @@ export function FarmMap({
     setTool("pointer");
   };
   const pick = (id: string) => {
+    setTarget(undefined);
     selectField(id);
     setPanel(true);
     setSearching(false);
   };
+  const flyTo = (point: Point, name: string) => {
+    setTarget(point);
+    setQuery(name);
+    setSearching(false);
+  };
+  async function findPlace() {
+    const id = ++placeRequest.current;
+    const point = coordinatePair(q);
+    if (point) {
+      flyTo(point, q);
+      return;
+    }
+    setPlaces([]);
+    setPlaceQuery(q);
+    setPlaceStatus("Searching places…");
+    try {
+      const results = await request<Place[]>(`/locations?q=${encodeURIComponent(q)}`);
+      if (placeRequest.current !== id) return;
+      setPlaces(results);
+      setPlaceStatus(
+        results.length ? "" : "No places found. Try a nearby town or enter latitude, longitude.",
+      );
+    } catch (error) {
+      if (placeRequest.current !== id) return;
+      setPlaceStatus(error instanceof Error ? error.message : "Places could not be loaded.");
+    }
+  }
   const pickLocation = (r: Region, name: string) => {
     setRegion(r);
     setView(view + 1);
@@ -115,7 +165,7 @@ export function FarmMap({
     setQuery(name);
     setSearching(false);
     setPanel(true);
-    notify(`Map centered on ${regionData[r].district}.`);
+    notify(`Map centered on ${demoRegion(r).district}.`);
   };
   return (
     <>
@@ -137,7 +187,7 @@ export function FarmMap({
           icon={<Layers size={21} />}
           value={visible.length}
           label="Mapped fields"
-          note={`In ${map.district} district`}
+          note={connected ? region || "All locations" : `In ${map.district} district`}
         />
         <Stat
           icon={<Ruler size={21} />}
@@ -151,9 +201,9 @@ export function FarmMap({
         />
         <Stat
           icon={<Users size={21} />}
-          value={farmers.filter((f) => f.region === region).length}
+          value={farmers.filter((f) => !region || f.region === region).length}
           label="Registered farmers"
-          note="In the selected region"
+          note={connected ? region || "All locations" : "In the selected region"}
         />
       </div>
       <section className={`card map-workspace ${full ? "map-expanded" : ""}`}>
@@ -165,7 +215,7 @@ export function FarmMap({
             <div>
               <strong>Field workspace</strong>
               <small>
-                {map.district}, {map.short}
+                {connected ? region || "All locations" : `${map.district}, ${map.short}`}
               </small>
             </div>
           </div>
@@ -175,6 +225,7 @@ export function FarmMap({
               onSubmit={(e) => {
                 e.preventDefault();
                 if (matches[0]) pick(matches[0].id);
+                else if (connected && q.length >= 2) void findPlace();
                 else if (locations[0]) pickLocation(locations[0].r, locations[0].name);
               }}
             >
@@ -193,8 +244,16 @@ export function FarmMap({
                 onKeyDown={(e) => {
                   if (e.key === "Escape") setSearching(false);
                 }}
-                placeholder="Search village, district, or coordinates…"
-                aria-label="Search village, district, or coordinates"
+                placeholder={
+                  connected
+                    ? "Search place, field, or latitude, longitude…"
+                    : "Search village, district, or coordinates…"
+                }
+                aria-label={
+                  connected
+                    ? "Search place, field, or coordinates"
+                    : "Search village, district, or coordinates"
+                }
               />
               {query && (
                 <button
@@ -237,7 +296,37 @@ export function FarmMap({
                     </span>
                   </button>
                 ))}
-                {!locations.length && !matches.length && <p>No matching locations in the demo.</p>}
+                {connected && q.length >= 2 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void findPlace()}
+                      disabled={placeQuery === q && placeStatus === "Searching places…"}
+                    >
+                      <Search size={15} /> Search places or coordinates
+                    </button>
+                    {placeQuery === q && placeStatus && <p role="status">{placeStatus}</p>}
+                    {placeQuery === q &&
+                      places.map((place) => (
+                        <button
+                          type="button"
+                          key={place.id}
+                          onClick={() => flyTo([place.longitude, place.latitude], place.name)}
+                        >
+                          <MapPin size={15} />
+                          <span>
+                            {place.name}
+                            <small>
+                              {[place.region, place.country].filter(Boolean).join(", ")}
+                            </small>
+                          </span>
+                        </button>
+                      ))}
+                  </>
+                )}
+                {!connected && !locations.length && !matches.length && (
+                  <p>No matching locations in the demo.</p>
+                )}
               </div>
             )}
           </div>
@@ -272,7 +361,7 @@ export function FarmMap({
         </header>
         <div className={`map-grid ${panel ? "" : "map-only"}`}>
           <GeoCanvas
-            key={`${region}-${view}`}
+            key={connected ? "live" : `${region}-${view}`}
             region={region}
             fields={visible}
             selected={field?.id}
@@ -282,6 +371,7 @@ export function FarmMap({
             editing={editing}
             draft={draft ?? undefined}
             onDraftChange={setDraft}
+            target={target}
             activePoint={activePoint}
             setActivePoint={setActivePoint}
             onPoint={(p) => {
@@ -392,7 +482,9 @@ export function FarmMap({
                         <MapPin size={14} /> Location
                       </dt>
                       <dd>
-                        {map.district}, {region === "Punjab" ? "Punjab" : "KP"}
+                        {connected
+                          ? field.region
+                          : `${map.district}, ${region === "Punjab" ? "Punjab" : "KP"}`}
                       </dd>
                     </div>
                     <div>
@@ -442,7 +534,7 @@ export function FarmMap({
           <span>
             <i /> {visible.length} {visible.length === 1 ? "field" : "fields"} visible{" "}
             <span className="footer-divider" /> <Crosshair size={14} />
-            <span className="coordinate">{map.center}</span>
+            {!connected && <span className="coordinate">{map.center}</span>}
           </span>
           <span>
             {!panel && (

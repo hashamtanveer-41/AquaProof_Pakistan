@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, MapPin, UserRoundPlus, X } from "lucide-react";
-import { acres, measure, regionData, regions } from "@/domain/data";
+import { acres, measure, demoRegion, regions } from "@/domain/data";
 import type { Farmer, Field, Point, Region } from "@/domain/data";
 import { Button, Demo } from "@/components/ui";
 import { connected } from "@/domain/registry";
@@ -30,7 +30,7 @@ export function RegisterModal({
     dialog.current?.showModal();
   }, []);
   const formRegion = points ? region : province;
-  const options = farmers.filter((f) => f.region === formRegion);
+  const options = connected ? farmers : farmers.filter((f) => f.region === formRegion);
   return (
     <dialog
       ref={dialog}
@@ -63,8 +63,8 @@ export function RegisterModal({
                 phone: val("phone"),
                 village: connected
                   ? val("village")
-                  : val("village") || regionData[formRegion].village,
-                region: formRegion,
+                  : val("village") || demoRegion(formRegion).village,
+                region: connected ? val("region") : formRegion,
               },
               points
                 ? {
@@ -103,7 +103,7 @@ export function RegisterModal({
           {points
             ? connected
               ? "Link this field to a farmer. The saved boundary determines its area."
-              : `Link the mapped ${acres(measure(points))}-acre field to a farmer in ${regionData[region].district}.`
+              : `Link the mapped ${acres(measure(points))}-acre field to a farmer in ${demoRegion(region).district}.`
             : "Add a farmer to the registry. You can link fields from the Farm Map."}
         </p>
         {error && <p role="alert">{error}</p>}
@@ -152,10 +152,15 @@ export function RegisterModal({
                 required={connected}
               />
             </label>
-            {points ? (
+            {connected ? (
+              <label>
+                Region or district
+                <input name="region" defaultValue={region} maxLength={160} required />
+              </label>
+            ) : points ? (
               <label>
                 District
-                <input value={`${regionData[region].district}, ${region}`} readOnly />
+                <input value={`${demoRegion(region).district}, ${region}`} readOnly />
               </label>
             ) : (
               <label>
@@ -172,7 +177,7 @@ export function RegisterModal({
               <input
                 name="village"
                 key={formRegion}
-                defaultValue={connected ? "" : regionData[formRegion].village}
+                defaultValue={connected ? "" : demoRegion(formRegion).village}
                 required
                 pattern=".*\S.*"
               />

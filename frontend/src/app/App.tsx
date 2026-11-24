@@ -27,7 +27,7 @@ import {
   initialFarmers,
   initialFields,
   measure,
-  regionData,
+  demoRegion,
   regions,
   validBoundary,
 } from "@/domain/data";
@@ -51,6 +51,7 @@ const Profile = lazy(() => import("@/pages/Profile"));
 const Registry = lazy(() => import("@/pages/Registry"));
 const Reports = lazy(() => import("@/pages/Reports"));
 const Weather = lazy(() => import("@/pages/Weather"));
+const FieldIntelligence = lazy(() => import("@/pages/FieldIntelligence"));
 const Advisory = lazy(() => import("@/pages/Advisory"));
 const LiveAdvisory = lazy(() => import("@/pages/LiveAdvisory"));
 
@@ -83,7 +84,7 @@ const navigation = [
 
 export default function App() {
   const [page, setPage] = useState<Page>("map");
-  const [region, setRegion] = useState<Region>("Punjab");
+  const [region, setRegion] = useState<Region>(connected ? "" : "Punjab");
   const [fields, setFields] = useState(connected ? [] : initialFields);
   const [farmers, setFarmers] = useState(connected ? [] : initialFarmers);
   const [fieldId, setFieldId] = useState(connected ? "" : initialFields[0].id);
@@ -107,10 +108,13 @@ export default function App() {
   const search = useRef<HTMLInputElement>(null);
   const field = fields.find((f) => f.id === fieldId);
   const farmer = farmers.find((f) => f.id === farmerId);
-  const mapField =
-    fields.find((f) => f.id === fieldId && f.region === region) ??
-    fields.find((f) => f.region === region);
-  const district = regionData[region];
+  const visibleFields = fields.filter((f) => !region || f.region === region);
+  const mapField = visibleFields.find((f) => f.id === fieldId) ?? visibleFields[0];
+  const district = demoRegion(region);
+  const locationName = connected ? region || "All locations" : district.district;
+  const regionOptions = connected
+    ? ["", ...new Set(farmers.map((person) => person.region).sort())]
+    : regions;
   const title =
     page === "profile"
       ? "Farmer Profile"
@@ -179,7 +183,7 @@ export default function App() {
     }
     setFieldId(id);
     setFarmerId(found.farmerId);
-    setRegion(found.region);
+    if (!connected || (region && found.region !== region)) setRegion(found.region);
     setMenu("");
   };
   const pickRegion = (r: Region) => {
@@ -188,7 +192,7 @@ export default function App() {
       setDraft(null);
       setEditing(false);
       setDraftOwner(undefined);
-      const f = fields.find((f) => f.region === r);
+      const f = fields.find((f) => !r || f.region === r);
       if (f) {
         setFieldId(f.id);
         setFarmerId(f.farmerId);
@@ -201,7 +205,7 @@ export default function App() {
     if (!found) return;
     if (next) go(next);
     setFarmerId(id);
-    setRegion(found.region);
+    if (!connected || (region && found.region !== region)) setRegion(found.region);
     setFieldId(
       fields.find((f) => f.farmerId === id)?.id ??
         (connected ? "" : fields.find((f) => f.region === found.region)?.id) ??
@@ -260,7 +264,7 @@ export default function App() {
       if (saved.field) replaceField(saved.field);
       go("profile");
       setFarmerId(saved.farmer.id);
-      setRegion(saved.farmer.region);
+      if (region && saved.farmer.region !== region) setRegion(saved.farmer.region);
       setFieldId(saved.field?.id ?? "");
       setRegistration(undefined);
       notify(saved.field ? "Farm saved and linked to the farmer profile." : "Farmer registered.");
@@ -314,7 +318,9 @@ export default function App() {
   const farmResults = ql
     ? fields
         .filter((f) =>
-          `${f.id} ${f.name} ${f.crop} ${regionData[f.region].district}`.toLowerCase().includes(ql),
+          `${f.id} ${f.name} ${f.crop} ${connected ? f.region : demoRegion(f.region).district}`
+            .toLowerCase()
+            .includes(ql),
         )
         .slice(0, 5)
     : [];
@@ -431,7 +437,7 @@ export default function App() {
                       <span>
                         {f.name}
                         <small>
-                          {f.id} · {regionData[f.region].district}
+                          {f.id} · {connected ? f.region : demoRegion(f.region).district}
                         </small>
                       </span>
                     </button>
@@ -468,19 +474,21 @@ export default function App() {
               >
                 <MapPin size={16} />
                 <span>
-                  {district.district}, {region === "Punjab" ? "Punjab" : "KP"}
+                  {connected
+                    ? locationName
+                    : `${district.district}, ${region === "Punjab" ? "Punjab" : "KP"}`}
                 </span>
                 <ChevronDown size={14} />
               </button>
               {menu === "region" && (
                 <div className="dropdown district-menu">
                   <p>SWITCH REGION</p>
-                  {regions.map((r) => (
+                  {regionOptions.map((r) => (
                     <button key={r} onClick={() => pickRegion(r)}>
                       <MapPin size={16} />
                       <span>
-                        {regionData[r].district}
-                        <small>{r}</small>
+                        {connected ? r || "All locations" : demoRegion(r).district}
+                        {!connected && <small>{r}</small>}
                       </span>
                       {r === region && <Check size={15} className="menu-check" />}
                     </button>
@@ -600,9 +608,9 @@ export default function App() {
                     rows={[
                       [
                         "Registered farmers",
-                        farmers.filter((farmer) => farmer.region === region).length,
+                        farmers.filter((farmer) => !region || farmer.region === region).length,
                       ],
-                      ["Mapped fields", fields.filter((field) => field.region === region).length],
+                      ["Mapped fields", visibleFields.length],
                     ]}
                   />
                 </Card>
@@ -696,7 +704,10 @@ export default function App() {
                   }}
                 />
               )}
-              {connected && (page === "irrigation" || page === "weather" || page === "reports") && (
+              {connected && (page === "irrigation" || page === "weather") && (
+                <FieldIntelligence mode={page} field={mapField} fields={fields} open={openField} />
+              )}
+              {connected && page === "reports" && (
                 <Card title={title}>
                   <p>Live data for this page is pending integration.</p>
                 </Card>
@@ -720,7 +731,7 @@ export default function App() {
                           ["Name", "Ayesha Khan"],
                           ["Role", "Agriculture Officer"],
                           ["Department", "Agriculture Department"],
-                          ["Current district", district.district],
+                          [connected ? "Current location" : "Current district", locationName],
                         ]}
                       />
                     </Card>

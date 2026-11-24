@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, Droplets, Sprout } from "lucide-react";
-import { acres, pkr, regionData } from "@/domain/data";
+import { acres, pkr, demoRegion } from "@/domain/data";
 import type { Farmer, Field, Page, SelectField } from "@/domain/data";
 import { GeoCanvas } from "@/features/map/GeoCanvas";
 import { connected } from "@/domain/registry";
@@ -24,7 +24,7 @@ export default function Profile({
 }) {
   const plots = fields.filter((f) => f.farmerId === farmer.id);
   const selected = plots.find((f) => f.id === field?.id) ?? plots[0];
-  const map = regionData[farmer.region];
+  const map = demoRegion(farmer.region);
   return (
     <>
       <button className="back-link" onClick={() => go("registry")}>
@@ -33,7 +33,11 @@ export default function Profile({
       <PageTitle
         eyebrow={`FARMER PROFILE · ${farmer.id}`}
         title={farmer.name}
-        description={`${farmer.village} · ${map.district}, ${farmer.region}`}
+        description={
+          connected
+            ? `${farmer.village} · ${farmer.region}`
+            : `${farmer.village} · ${map.district}, ${farmer.region}`
+        }
       >
         <Chip dot>Registered farmer</Chip>
         <Button
@@ -56,7 +60,7 @@ export default function Profile({
                 ["Farmer ID", farmer.id],
                 ["Email", farmer.email || "Not provided"],
                 ["Phone", farmer.phone || "Not provided"],
-                ["Province", farmer.region],
+                [connected ? "Region" : "Province", farmer.region],
                 ...(!connected ? [["District", map.district] as [string, string]] : []),
                 ["Village", farmer.village],
                 ["Total mapped area", `${acres(plots.reduce((sum, f) => sum + f.acres, 0))} ac`],

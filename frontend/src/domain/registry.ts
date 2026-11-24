@@ -6,7 +6,7 @@ export const connected = Boolean(apiUrl);
 
 type Boundary = { type: "Polygon"; coordinates: Point[][] };
 type Season = { id: number; crop: string; variety: string | null; planted: string | null };
-type SavedField = Omit<Field, "points" | "crop" | "previous" | "planted" | "stage" | "rate"> & {
+type SavedField = Omit<Field, "points" | "crop" | "previous" | "planted" | "rate"> & {
   boundary: Boundary;
   seasons: Season[];
 };
@@ -24,7 +24,6 @@ export function toField({ boundary, seasons, history, ...base }: SavedField): Fi
     crop: seasons[0]?.crop ?? "Not recorded",
     previous: seasons[1]?.crop ?? "Not recorded",
     planted: seasons[0]?.planted ?? "Not recorded",
-    stage: "Not recorded",
     rate: 0,
     history: [
       ...history,
