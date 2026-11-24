@@ -37,6 +37,8 @@
 
 ## ⚡ Overview
 
+**Current status:** The repository contains a standalone frontend demonstration using local sample data. The backend, integrations, architecture, and capabilities described below are planned unless explicitly identified as available.
+
 **AquaProof Pakistan** gives government agricultural officers a digital record of every registered farm and uses location-specific weather data, FAO-56 scientific simulation, and AI communication to deliver timely, personalized irrigation and crop-management guidance — even to farmers who don't use smartphones.
 
 Officers manage farms through a central web dashboard. Farmers receive recommendations via email (simulating SMS for the prototype). Every advisory is generated from that farm's actual polygon boundary, crop stage, soil profile, and local weather — not generic templates.
@@ -137,6 +139,27 @@ flowchart TD
 ```
 
 ---
+
+## Planned open-source integrations
+
+These integrations are planned for a functional government-operated irrigation management platform. Inspect each project's documentation, source code, and license before implementation.
+
+1. **PI-Advisor** — Use its irrigation algorithms, soil-water balance calculations, and crop water requirement models as the scientific foundation. [PI-Advisor](https://github.com/wateraccounting/PI-Advisor)
+2. **MapLibre GL JS and Terra Draw** — Provide interactive farm mapping, boundary tracing and editing, and land area calculation. [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js) · [Terra Draw](https://github.com/JamesLMilner/terra-draw)
+3. **PostgreSQL and PostGIS** — Persist farm boundaries, farmer profiles, irrigation schedules, and historical records. [PostgreSQL](https://github.com/postgres/postgres) · [PostGIS](https://github.com/postgis/postgis)
+4. **Open-Meteo and NASA POWER** — Integrate weather forecasts and historical agricultural data. [Open-Meteo](https://github.com/open-meteo/open-meteo) · [NASA POWER](https://power.larc.nasa.gov/)
+5. **SciPy** — Develop Pakistan-specific Warabandi scheduling, canal water allocation, tubewell cost optimization, and what-if simulations. [SciPy](https://github.com/scipy/scipy)
+6. **FastAPI** — Implement backend APIs using a modular architecture. [FastAPI](https://github.com/fastapi/fastapi)
+7. **Mailpit and SMTP/IMAP** — Implement two-way email communication to simulate farmer SMS interactions. [Mailpit](https://github.com/axllent/mailpit)
+
+### Future implementation instructions
+
+- Inspect the existing AquaProof codebase before making changes, and verify repository URLs and licenses.
+- Reuse relevant implementations and algorithms where appropriate. Install libraries directly instead of cloning entire repositories unnecessarily.
+- Preserve the existing UI and PRD requirements. Keep dependencies minimal and avoid paid APIs.
+- Implement each integration sequentially and test it before proceeding.
+- Use real data where available and maintain proper open-source attribution.
+- Ensure the modules work together as one functional government-operated irrigation management platform, and continue implementation until all integrations are functional.
 
 ## 👥 Team Roster & Ownership
 
