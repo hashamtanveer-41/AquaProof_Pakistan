@@ -30,6 +30,9 @@ export type Field = {
   soil: string;
   source: string;
   acres: number;
+  latitude?: number;
+  longitude?: number;
+  irrigation_status?: "canal_today" | "configured" | "setup_required" | "rain_fed";
   points: Point[];
   planted: string;
   stage: string;

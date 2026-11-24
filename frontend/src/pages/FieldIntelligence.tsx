@@ -3,8 +3,9 @@ import { Button, Card, Empty, PageTitle } from "@/components/ui";
 import { FieldSelect } from "@/components/FieldSelect";
 import type { Field, SelectField } from "@/domain/data";
 import { request } from "@/domain/registry";
-import { loadForecast, type FieldWeather as Weather } from "@/domain/weather";
+import { formatWeatherTime } from "@/domain/weather";
 type Settings = {
+  measured_at?: string | null;
   taw_mm: number;
   initial_depletion_mm: number;
   allowable_depletion: number;
@@ -31,6 +32,8 @@ type Plan = {
   }[];
 };
 type Result = {
+  weather_source: string;
+  weather_retrieved_at: string;
   recommended: string;
   plans: Record<string, Plan>;
   readily_available_mm: number;
@@ -42,135 +45,6 @@ const show = (value?: number | null) =>
   value == null ? "Unavailable" : value.toLocaleString("en-PK", { maximumFractionDigits: 2 });
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "The request failed.";
-
-function WeatherTable({ weather, historical = false }: { weather: Weather; historical?: boolean }) {
-  if (!weather.daily.length) return <p>No published observations were returned for those dates.</p>;
-  return (
-    <>
-      <p>
-        {weather.source} for {weather.latitude.toFixed(4)}°, {weather.longitude.toFixed(4)}°
-      </p>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Low (°C)</th>
-              <th>High (°C)</th>
-              <th>Rain (mm)</th>
-              {historical ? (
-                <th>Solar (MJ/m²/day)</th>
-              ) : (
-                <>
-                  <th>Reference ET (mm)</th>
-                  <th>Canal turn (m³)</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {weather.daily.map((day) => (
-              <tr key={day.date}>
-                <td>{day.date}</td>
-                <td>{show(day.min_c)}</td>
-                <td>{show(day.max_c)}</td>
-                <td>{show(day.rain_mm)}</td>
-                {historical ? (
-                  <td>{show(day.solar_mj_m2)}</td>
-                ) : (
-                  <>
-                    <td>{show(day.eto_mm)}</td>
-                    <td>
-                      {day.canal_capacity_m3 == null ? "Unconfigured" : show(day.canal_capacity_m3)}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
-
-function FieldWeather({ path, fieldId }: { path: string; fieldId: string }) {
-  const [forecast, setForecast] = useState<Weather>();
-  const [history, setHistory] = useState<Weather>();
-  const [forecastStatus, setForecastStatus] = useState("Loading forecast…");
-  const [historyStatus, setHistoryStatus] = useState("Loading history…");
-  useEffect(() => {
-    let active = true;
-    loadForecast(fieldId)
-      .then((data) => {
-        if (active) {
-          setForecast(data);
-          setForecastStatus("");
-        }
-      })
-      .catch((error) => {
-        if (active) setForecastStatus(errorText(error));
-      });
-    request<Weather>(`${path}/weather/history`)
-      .then((data) => {
-        if (active) {
-          setHistory(data);
-          setHistoryStatus("");
-        }
-      })
-      .catch((error) => {
-        if (active) setHistoryStatus(errorText(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [path, fieldId]);
-
-  async function loadHistory(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    setHistoryStatus("Loading history…");
-    setHistory(undefined);
-    try {
-      const range = new URLSearchParams({
-        start: String(values.get("start")),
-        end: String(values.get("end")),
-      });
-      setHistory(await request<Weather>(`${path}/weather/history?${range}`));
-      setHistoryStatus("");
-    } catch (error) {
-      setHistoryStatus(errorText(error));
-    }
-  }
-
-  return (
-    <>
-      <Card title="Seven-day forecast">
-        {forecast ? <WeatherTable weather={forecast} /> : <p role="status">{forecastStatus}</p>}
-      </Card>
-      <Card title="Historical weather">
-        <form className="form-grid" onSubmit={loadHistory}>
-          <label>
-            Start date
-            <input name="start" type="date" required />
-          </label>
-          <label>
-            End date
-            <input name="end" type="date" required />
-          </label>
-          <Button type="submit" disabled={historyStatus === "Loading history…"}>
-            Load dates
-          </Button>
-        </form>
-        {history ? (
-          <WeatherTable weather={history} historical />
-        ) : (
-          <p role="status">{historyStatus}</p>
-        )}
-      </Card>
-    </>
-  );
-}
 
 function Numeric({
   name,
@@ -208,6 +82,8 @@ function Numeric({
 function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   const [settings, setSettings] = useState<Settings | null>();
   const [settingsStatus, setSettingsStatus] = useState("Loading settings…");
+  const [settingsAttempt, setSettingsAttempt] = useState(0);
+  const [loadingSettings, setLoadingSettings] = useState(true);
   const [scenarioStatus, setScenarioStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>();
@@ -227,11 +103,14 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
       })
       .catch((error) => {
         if (active) setSettingsStatus(errorText(error));
+      })
+      .finally(() => {
+        if (active) setLoadingSettings(false);
       });
     return () => {
       active = false;
     };
-  }, [path]);
+  }, [path, settingsAttempt]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -268,7 +147,11 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     setSettingsStatus("");
     setResult(undefined);
     try {
-      setSettings(await request<Settings>(`${path}/irrigation-settings`, "PUT", data));
+      const measurement = String(values.get("measured_at") ?? "");
+      const query = measurement
+        ? "?" + new URLSearchParams({ measured_at: new Date(measurement).toISOString() })
+        : "";
+      setSettings(await request<Settings>(`${path}/irrigation-settings${query}`, "PUT", data));
       setSettingsStatus("Irrigation settings saved.");
     } catch (error) {
       setSettingsStatus(errorText(error));
@@ -305,6 +188,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   async function explain() {
     if (!scenario) return;
     setBusy(true);
+    setResult(undefined);
     setExplanation("");
     setExplanationStatus("Generating explanation…");
     try {
@@ -375,6 +259,15 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
                 label="Current surface depletion (mm)"
                 value={settings?.initial_surface_depletion_mm}
               />
+              <label>
+                Soil-water measurement time (local)
+                <input name="measured_at" type="datetime-local" />
+                <small>
+                  {settings?.measured_at
+                    ? "Last recorded " + formatWeatherTime(settings.measured_at) + " PKT"
+                    : "Record this when measuring depletion for automatic advisories."}
+                </small>
+              </label>
             </div>
             {canal && (
               <fieldset className="form-grid">
@@ -436,8 +329,22 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
           </form>
         )}
         {settingsStatus && <p role="status">{settingsStatus}</p>}
+        {settings === undefined && !loadingSettings && (
+          <Button
+            onClick={() => {
+              setLoadingSettings(true);
+              setSettingsStatus("Loading settings…");
+              setSettingsAttempt((attempt) => attempt + 1);
+            }}
+          >
+            Retry loading field inputs
+          </Button>
+        )}
       </Card>
-      <Card title="What-if scenario" subtitle={`${field.crop} · ${field.stage}`}>
+      <Card
+        title="What-if scenario"
+        subtitle={`${field.crop} · ${field.stage} · Uses available forecast days`}
+      >
         <form className="form-grid" onSubmit={run}>
           <Numeric name="rain" label="Forecast rainfall multiplier" value={1} max={3} />
           <Numeric name="delay" label="Canal delay (days)" value={0} max={60} step={1} />
@@ -447,11 +354,12 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
           </Button>
         </form>
         {scenarioStatus && <p role="status">{scenarioStatus}</p>}
+        {explanationStatus && <p role="status">{explanationStatus}</p>}
       </Card>
       {result && (
         <Card
           title={`Recommended plan · ${result.recommended}`}
-          subtitle={`Readily available water: ${show(result.readily_available_mm)} mm`}
+          subtitle={`${result.weather_source} forecast retrieved ${formatWeatherTime(result.weather_retrieved_at)} PKT · Readily available water ${show(result.readily_available_mm)} mm`}
         >
           <div className="table-scroll">
             <table>
@@ -506,7 +414,6 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
           <Button onClick={() => void explain()} disabled={busy}>
             Explain this plan with AI
           </Button>
-          {explanationStatus && <p role="status">{explanationStatus}</p>}
           {explanation && <p style={{ whiteSpace: "pre-wrap" }}>{explanation}</p>}
         </Card>
       )}
@@ -515,22 +422,22 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
 }
 
 export default function FieldIntelligence({
-  mode,
   field,
   fields,
   open,
+  openMap,
 }: {
-  mode: "weather" | "irrigation";
   field?: Field;
   fields: Field[];
   open: SelectField;
+  openMap: () => void;
 }) {
   const path = `/fields/${encodeURIComponent(field?.id ?? "")}`;
   return (
     <>
       <PageTitle
         eyebrow="FIELD INTELLIGENCE"
-        title={mode === "weather" ? "Weather & Canal Data" : "Irrigation Intelligence"}
+        title="Irrigation Intelligence"
         description={
           field
             ? `Field-level data for ${field.name}.`
@@ -540,15 +447,12 @@ export default function FieldIntelligence({
         {field && <FieldSelect fields={fields} id={field.id} onChange={open} />}
       </PageTitle>
       {field ? (
-        mode === "weather" ? (
-          <FieldWeather key={path} path={path} fieldId={field.id} />
-        ) : (
-          <FieldIrrigation key={path} path={path} field={field} />
-        )
+        <FieldIrrigation key={path} path={path} field={field} />
       ) : (
         <Empty
           title="No registered field selected"
           text="Go to the Farm Map to draw and register a field."
+          action={<Button onClick={openMap}>Open Farm Map</Button>}
         />
       )}
     </>

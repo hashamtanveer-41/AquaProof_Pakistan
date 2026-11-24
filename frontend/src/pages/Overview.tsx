@@ -76,7 +76,6 @@ export default function Overview({
         >
           <GeoCanvas
             key={region}
-            region={region}
             fields={farms}
             onSelect={(id) => open(id, "profile")}
             selected={farms[0]?.id}

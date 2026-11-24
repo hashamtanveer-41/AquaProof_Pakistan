@@ -12,6 +12,7 @@
     "format:check": "oxfmt --check src index.html package.json tsconfig.json vite.config.ts"
   },
   "dependencies": {
+    "@turf/area": "^7.4.0",
     "lucide-react": "^1.78.0",
     "maplibre-gl": "^6.19.0",
     "react": "^19.0.0",

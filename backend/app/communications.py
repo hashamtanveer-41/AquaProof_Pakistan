@@ -82,7 +82,11 @@ def retry_advisory(advisory_id: int):
     with connect() as connection:
         return require(connection.execute(
             """UPDATE advisories SET failed_at = NULL, scheduled_at = now()
-               WHERE id = %s AND failed_at IS NOT NULL AND sent_at IS NULL RETURNING *""",
+               WHERE id = %s AND failed_at IS NOT NULL AND sent_at IS NULL
+                 AND EXISTS (
+                     SELECT 1 FROM fields f WHERE f.id = advisories.field_id AND f.archived_at IS NULL
+                 )
+               RETURNING *""",
             (advisory_id,),
         ).fetchone(), "Failed advisory")
 
@@ -95,8 +99,9 @@ def deliver_due():
         advisory = connection.execute(
             """SELECT a.*, p.email FROM advisories a JOIN fields f ON f.id = a.field_id
                JOIN farmers p ON p.id = f.farmer_id
-               WHERE a.sent_at IS NULL AND a.failed_at IS NULL AND a.scheduled_at <= now()
-               ORDER BY a.scheduled_at, a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED"""
+               WHERE f.archived_at IS NULL AND a.sent_at IS NULL
+                 AND a.failed_at IS NULL AND a.scheduled_at <= now()
+               ORDER BY a.scheduled_at, a.id LIMIT 1 FOR UPDATE OF a, f SKIP LOCKED"""
         ).fetchone()
         if advisory is None:
             return

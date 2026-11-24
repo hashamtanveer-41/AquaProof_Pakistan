@@ -10,7 +10,7 @@ import {
   type Region,
   type SelectField,
 } from "@/domain/data";
-import { loadForecast, type FieldWeather } from "@/domain/weather";
+import { formatWeatherTime, loadForecast, type FieldWeather } from "@/domain/weather";
 import { GeoCanvas } from "@/features/map/GeoCanvas";
 
 function ForecastSummary({ field }: { field: Field }) {
@@ -33,27 +33,29 @@ function ForecastSummary({ field }: { field: Field }) {
     };
   }, [field.id, attempt]);
 
+  const refresh = () => {
+    setForecast(undefined);
+    setError("");
+    setAttempt((current) => current + 1);
+  };
+
   if (error)
     return (
       <>
         <p role="status">{error}</p>
-        <TextAction
-          onClick={() => {
-            setError("");
-            setAttempt((current) => current + 1);
-          }}
-        >
-          Retry forecast
-        </TextAction>
+        <TextAction onClick={refresh}>Retry forecast</TextAction>
       </>
     );
   if (!forecast) return <p role="status">Loading field forecast…</p>;
 
   return (
     <>
-      <p>
-        {forecast.source} · {forecast.latitude.toFixed(4)}°, {forecast.longitude.toFixed(4)}°
-      </p>
+      <div className="weather-source">
+        <p>
+          {forecast.source} · Retrieved {formatWeatherTime(forecast.retrieved_at)} PKT
+        </p>
+        <Button onClick={refresh}>Refresh forecast</Button>
+      </div>
       <div className="table-scroll">
         <table>
           <thead>
@@ -147,7 +149,7 @@ export default function LiveOverview({
                 <TextAction onClick={() => open(field.id, "map")}>View on Farm Map</TextAction>
               }
             >
-              <GeoCanvas region={region} fields={fields} selected={field.id} onSelect={open} />
+              <GeoCanvas fields={fields} selected={field.id} onSelect={open} />
             </Card>
             <Card title="Crops by mapped area">
               <div className="crop-bars">

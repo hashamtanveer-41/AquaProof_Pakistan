@@ -1,8 +1,21 @@
 import type { Farmer, Field, Point } from "./data";
 
-const apiUrl = import.meta.env.VITE_API_URL;
-const api = apiUrl?.replace(/\/$/, "");
-export const connected = Boolean(apiUrl);
+const api = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+export const connected = true;
+let officerToken = "";
+
+export function setOfficerToken(token: string) {
+  officerToken = token.trim();
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 type Boundary = { type: "Polygon"; coordinates: Point[][] };
 type Season = { id: number; crop: string; variety: string | null; planted: string | null };
@@ -37,13 +50,19 @@ export function toField({ boundary, seasons, history, ...base }: SavedField): Fi
 export async function request<T>(path: string, method = "GET", data?: unknown): Promise<T> {
   const response = await fetch(`${api}/api${path}`, {
     method,
-    headers: data === undefined ? undefined : { "Content-Type": "application/json" },
+    cache: "no-store",
+    signal: method === "GET" ? AbortSignal.timeout(35_000) : undefined,
+    headers: {
+      ...(data === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(officerToken && { Authorization: `Bearer ${officerToken}` }),
+    },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
   if (!response.ok) {
     const result = await response.json().catch(() => null);
     const detail = result?.detail;
-    throw new Error(
+    throw new ApiError(
+      response.status,
       typeof detail === "string"
         ? detail
         : Array.isArray(detail)
@@ -78,6 +97,10 @@ export async function registerFarmer(owner: Farmer, field?: FieldDetails & { bou
 
 export async function updateBoundary(id: string, points: Point[]) {
   return toField(await request<SavedField>(`/fields/${id}`, "PATCH", polygon(points)));
+}
+
+export function archiveField(id: string) {
+  return request<{ id: string }>(`/fields/${encodeURIComponent(id)}`, "DELETE");
 }
 
 export async function startSeason(id: string, crop: string, variety: string, planted: string) {

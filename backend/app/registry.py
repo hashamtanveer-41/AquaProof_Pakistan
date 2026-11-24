@@ -7,7 +7,9 @@ from psycopg.errors import CheckViolation, UniqueViolation
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
 
 from .database import connect
-from .science.crops import estimated_stage
+from .assistant_access import queue_field_recheck
+from .maps import require_tracing_authorization
+from .science.crops import estimated_stage, local_today
 
 router = APIRouter(prefix="/api", tags=["registry"])
 Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
@@ -72,10 +74,13 @@ class Registration(Input):
 FIELD_QUERY = """
     SELECT f.id, f.farmer_id AS "farmerId", f.name, p.region, p.village,
            f.soil, f.source, ST_AsGeoJSON(f.boundary, 15)::json AS boundary,
+           ST_X(f.representative_point) AS longitude, ST_Y(f.representative_point) AS latitude,
            ST_Area(f.boundary::geography) / 4046.8564224 AS acres,
+           i.settings AS irrigation_settings,
            COALESCE(c.seasons, '[]'::json) AS seasons,
            COALESCE(m.events, '[]'::json) AS history
     FROM fields f JOIN farmers p ON p.id = f.farmer_id
+    LEFT JOIN irrigation_settings i ON i.field_id = f.id
     LEFT JOIN LATERAL (
         SELECT json_agg(json_build_object('id', id, 'crop', crop, 'variety', variety,
                     'planted', planted) ORDER BY planted DESC NULLS LAST, id DESC) AS seasons
@@ -89,6 +94,7 @@ FIELD_QUERY = """
         FROM farmer_messages m JOIN advisories a ON a.id = m.advisory_id
         WHERE a.field_id = f.id AND m.approved_at IS NOT NULL
     ) m ON true
+    WHERE f.archived_at IS NULL
 """
 
 
@@ -107,13 +113,34 @@ def farmer_by_id(connection, farmer_id):
 
 def field_by_id(connection, field_id):
     return with_stage(require(
-        connection.execute(FIELD_QUERY + " WHERE f.id = %s", (field_id,)).fetchone(),
+        connection.execute(FIELD_QUERY + " AND f.id = %s", (field_id,)).fetchone(),
         "Field",
     ))
 
 
 def with_stage(field):
-    return {**field, "stage": estimated_stage(field["seasons"])}
+    settings = field.pop("irrigation_settings")
+    today = local_today()
+    return {
+        **field, "stage": estimated_stage(field["seasons"], today),
+        "irrigation_status": irrigation_status(field["source"], settings, today),
+    }
+
+
+def irrigation_status(source, settings, today):
+    sources = source.casefold()
+    settings = settings or {}
+    canal = settings.get("canal")
+    pump = settings.get("tubewell")
+    if canal:
+        days = (today - date.fromisoformat(canal["first_date"])).days
+        if days >= 0 and days % canal["cycle_days"] == 0:
+            return "canal_today"
+    if ("canal" in sources and not canal) or ("tubewell" in sources and not pump):
+        return "setup_required"
+    if canal or pump:
+        return "configured"
+    return "rain_fed" if "rain-fed" in sources else "setup_required"
 
 
 def create_farmer(connection, farmer):
@@ -154,6 +181,8 @@ def get_farmer(farmer_id: str):
 
 @router.post("/registrations", status_code=201)
 def register(registration: Registration):
+    if registration.field is not None:
+        require_tracing_authorization()
     try:
         with connect() as connection:
             farmer = (
@@ -191,15 +220,26 @@ def get_field(field_id: str):
 
 @router.patch("/fields/{field_id}")
 def update_boundary(field_id: str, boundary: Boundary):
+    require_tracing_authorization()
     try:
         with connect() as connection:
             require(connection.execute(
-                "UPDATE fields SET boundary = ST_GeomFromGeoJSON(%s) WHERE id = %s RETURNING id",
+                """UPDATE fields SET boundary = ST_GeomFromGeoJSON(%s)
+                   WHERE id = %s AND archived_at IS NULL RETURNING id""",
                 (boundary.model_dump_json(), field_id),
             ).fetchone(), "Field")
             return field_by_id(connection, field_id)
     except CheckViolation as error:
         raise HTTPException(422, "Draw a valid boundary without crossing edges") from error
+
+
+@router.delete("/fields/{field_id}")
+def archive_field(field_id: str):
+    with connect() as connection:
+        return require(connection.execute(
+            """UPDATE fields SET archived_at = COALESCE(archived_at, now())
+               WHERE id = %s RETURNING id""", (field_id,),
+        ).fetchone(), "Field")
 
 
 @router.post("/crop-seasons", status_code=201)
@@ -211,6 +251,7 @@ def add_season(field_id: str, season: CropInput):
                 "INSERT INTO crop_seasons (field_id, crop, variety, planted) VALUES (%s, %s, %s, %s)",
                 (field_id, season.crop, season.variety, season.planted),
             )
+            queue_field_recheck(connection, field_id)
             return field_by_id(connection, field_id)
     except UniqueViolation as error:
         raise HTTPException(409, "A season already starts on this date for the field") from error

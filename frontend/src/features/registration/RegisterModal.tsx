@@ -35,6 +35,7 @@ export function RegisterModal({
     <dialog
       ref={dialog}
       className="register-modal card"
+      aria-labelledby="registration-title"
       onCancel={(event) => {
         event.preventDefault();
         if (!saving) close();
@@ -98,7 +99,7 @@ export function RegisterModal({
             <X size={20} />
           </button>
         </div>
-        <h2>{points ? "Save farm boundary" : "Register a farmer"}</h2>
+        <h2 id="registration-title">{points ? "Save farm boundary" : "Register a farmer"}</h2>
         <p>
           {points
             ? connected

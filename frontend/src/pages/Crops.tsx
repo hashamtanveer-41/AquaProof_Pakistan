@@ -1,18 +1,20 @@
 import { useState } from "react";
 import { acres, demoRegion } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
-import { Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
+import { Button, Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
 import { connected, startSeason } from "@/domain/registry";
 
 export default function Crops({
   fields,
   region,
   open,
+  openMap,
   onSeasonSaved,
 }: {
   fields: Field[];
   region: Region;
   open: SelectField;
+  openMap: () => void;
   onSeasonSaved: (field: Field) => void;
 }) {
   const [crop, setCrop] = useState("");
@@ -137,6 +139,12 @@ export default function Crops({
               </tbody>
             </table>
           </div>
+        ) : !regionFields.length ? (
+          <Empty
+            title="No fields in this location"
+            text="Register a field on the Farm Map before starting a crop season."
+            action={<Button onClick={openMap}>Open Farm Map</Button>}
+          />
         ) : (
           <Empty
             title="No fields match this crop"

@@ -1,9 +1,8 @@
-import { ArrowLeft, ArrowRight, Droplets, Sprout } from "lucide-react";
-import { acres, pkr, demoRegion } from "@/domain/data";
+import { ArrowLeft, ArrowRight, Sprout } from "lucide-react";
+import { acres } from "@/domain/data";
 import type { Farmer, Field, Page, SelectField } from "@/domain/data";
 import { GeoCanvas } from "@/features/map/GeoCanvas";
-import { connected } from "@/domain/registry";
-import { Button, Card, Chip, Demo, Details, Empty, PageTitle, TextAction } from "@/components/ui";
+import { Button, Card, Chip, Details, Empty, PageTitle, TextAction } from "@/components/ui";
 
 export default function Profile({
   farmer,
@@ -12,7 +11,7 @@ export default function Profile({
   open,
   go,
   draw,
-  advisoryCount,
+  canDraw,
 }: {
   farmer: Farmer;
   fields: Field[];
@@ -20,11 +19,10 @@ export default function Profile({
   open: SelectField;
   go: (page: Page) => void;
   draw: () => void;
-  advisoryCount: number;
+  canDraw: boolean;
 }) {
   const plots = fields.filter((f) => f.farmerId === farmer.id);
   const selected = plots.find((f) => f.id === field?.id) ?? plots[0];
-  const map = demoRegion(farmer.region);
   return (
     <>
       <button className="back-link" onClick={() => go("registry")}>
@@ -33,35 +31,22 @@ export default function Profile({
       <PageTitle
         eyebrow={`FARMER PROFILE · ${farmer.id}`}
         title={farmer.name}
-        description={
-          connected
-            ? `${farmer.village} · ${farmer.region}`
-            : `${farmer.village} · ${map.district}, ${farmer.region}`
-        }
+        description={`${farmer.village} · ${farmer.region}`}
       >
         <Chip dot>Registered farmer</Chip>
-        <Button
-          onClick={() => (selected ? open(selected.id, "advisory") : go("advisory"))}
-          disabled={connected && !selected}
-        >
+        <Button onClick={() => selected && open(selected.id, "advisory")} disabled={!selected}>
           Open conversation <ArrowRight size={16} />
         </Button>
-        {selected && !connected && (
-          <Button variant="primary" onClick={() => open(selected.id, "irrigation")}>
-            <Droplets size={16} /> Simulate irrigation
-          </Button>
-        )}
       </PageTitle>
       <div className="grid-2 profile-grid">
         <div className="stack">
-          <Card title="Farmer information" action={connected ? undefined : <Demo />}>
+          <Card title="Farmer information">
             <Details
               rows={[
                 ["Farmer ID", farmer.id],
                 ["Email", farmer.email || "Not provided"],
                 ["Phone", farmer.phone || "Not provided"],
-                [connected ? "Region" : "Province", farmer.region],
-                ...(!connected ? [["District", map.district] as [string, string]] : []),
+                ["Region", farmer.region],
                 ["Village", farmer.village],
                 ["Total mapped area", `${acres(plots.reduce((sum, f) => sum + f.acres, 0))} ac`],
               ]}
@@ -70,7 +55,7 @@ export default function Profile({
           <Card
             title="Registered fields"
             subtitle="Each field keeps its own crop and irrigation history."
-            action={<TextAction onClick={draw}>Add field</TextAction>}
+            action={canDraw ? <TextAction onClick={draw}>Add field</TextAction> : undefined}
           >
             <div className="field-list">
               {plots.map((f) => (
@@ -95,24 +80,18 @@ export default function Profile({
             {!plots.length && (
               <Empty
                 title="No mapped fields"
-                text="Draw a boundary and link the saved field to this farmer."
-                action={<Button onClick={draw}>Draw a field</Button>}
+                text={
+                  canDraw
+                    ? "Draw a boundary and link the saved field to this farmer."
+                    : "Boundary tracing requires imagery digitization and storage authorization."
+                }
+                action={canDraw ? <Button onClick={draw}>Draw a field</Button> : undefined}
               />
             )}
           </Card>
           <Card title="Advisory history" subtitle="Officer-reviewed communications">
-            {!connected && (
-              <Details
-                rows={[
-                  ["Approved demo advisories", advisoryCount],
-                  ["Communication channel", "Simulated email"],
-                ]}
-              />
-            )}
-            {(!connected || selected) && (
-              <TextAction
-                onClick={() => (selected ? open(selected.id, "advisory") : go("advisory"))}
-              >
+            {selected && (
+              <TextAction onClick={() => open(selected.id, "advisory")}>
                 Open conversation
               </TextAction>
             )}
@@ -131,7 +110,6 @@ export default function Profile({
               >
                 <GeoCanvas
                   key={selected.region}
-                  region={selected.region}
                   fields={plots}
                   selected={selected.id}
                   onSelect={(id) => open(id, "profile")}
@@ -146,22 +124,6 @@ export default function Profile({
                     ["Planting date", selected.planted],
                     ["Estimated stage", selected.stage],
                     ["Water source", selected.source],
-                    ...(!connected
-                      ? [
-                          [
-                            "Canal turn (synthetic)",
-                            selected.source.includes("Canal")
-                              ? `${map.canal} · ${map.canalDay}`
-                              : "Not connected",
-                          ] as [string, string],
-                          [
-                            "Tubewell and cost",
-                            selected.source.includes("Tubewell")
-                              ? `${pkr(selected.rate)} / hour`
-                              : "Not available",
-                          ] as [string, string],
-                        ]
-                      : []),
                   ]}
                 />
               </Card>

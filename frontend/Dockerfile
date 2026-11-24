@@ -4,7 +4,6 @@ COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/pnpm/store \
     corepack pnpm install --frozen-lockfile --store-dir /pnpm/store --network-concurrency=8 --fetch-retries=4
 COPY . .
-ARG VITE_MAP_TILES
 ENV VITE_API_URL=/
 RUN corepack pnpm build
 

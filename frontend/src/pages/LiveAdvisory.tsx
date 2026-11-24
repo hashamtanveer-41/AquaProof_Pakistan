@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Card, Empty, PageTitle } from "@/components/ui";
+import { Button, Card, Empty, PageTitle } from "@/components/ui";
 import type { Field } from "@/domain/data";
 import { fetchField, request } from "@/domain/registry";
+import { AssistantMonitor } from "./AssistantMonitor";
 
 type Advisory = {
   id: number;
@@ -29,36 +30,46 @@ export default function LiveAdvisory({
   fields,
   selectedFieldId,
   onFieldUpdated,
+  openMap,
 }: {
   fields: Field[];
   selectedFieldId?: string;
   onFieldUpdated: (field: Field) => void;
+  openMap: () => void;
 }) {
   const [selection, setSelection] = useState("");
   const field = fields.find((item) => item.id === (selection || selectedFieldId)) ?? fields[0];
   const [revision, setRevision] = useState(0);
-  const [saved, setSaved] = useState<{ id: string; history: History }>();
-  const history = saved?.id === field?.id ? saved?.history : undefined;
+  const [saved, setSaved] = useState<{ id: string; revision: number; history: History }>();
+  const history =
+    saved?.id === field?.id && saved?.revision === revision ? saved.history : undefined;
+  const [historyError, setHistoryError] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const fieldId = field?.id;
   useEffect(() => {
     if (!fieldId) return;
     let active = true;
-    const refresh = () => {
-      request<History>(`/fields/${encodeURIComponent(fieldId)}/advisories`)
-        .then((result) => {
-          if (active) setSaved({ id: fieldId, history: result });
-        })
-        .catch(() => {
-          if (active) setStatus("Could not load the conversation.");
-        });
+    let timer: number;
+    setHistoryError("");
+    const refresh = async () => {
+      try {
+        const result = await request<History>(`/fields/${encodeURIComponent(fieldId)}/advisories`);
+        if (!active) return;
+        setSaved({ id: fieldId, revision, history: result });
+        setHistoryError("");
+      } catch {
+        if (!active) return;
+        setSaved(undefined);
+        setHistoryError("Could not load the conversation.");
+      } finally {
+        if (active) timer = window.setTimeout(refresh, 5000);
+      }
     };
-    refresh();
-    const timer = window.setInterval(refresh, 5000);
+    void refresh();
     return () => {
       active = false;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
     };
   }, [fieldId, revision]);
 
@@ -85,9 +96,14 @@ export default function LiveAdvisory({
         description="Approve email delivery and review farmer replies for each field."
       />
       {!field ? (
-        <Empty title="No registered fields" text="Register a field to start a conversation." />
+        <Empty
+          title="No registered fields"
+          text="Register a field to start a conversation."
+          action={<Button onClick={openMap}>Open Farm Map</Button>}
+        />
       ) : (
         <>
+          <AssistantMonitor key={field.id} field={field} />
           <Card title="Approve an advisory">
             <form
               className="form-grid"
@@ -143,12 +159,26 @@ export default function LiveAdvisory({
               {status && <p role="status">{status}</p>}
             </form>
           </Card>
-          <Card title="Conversation history">
-            {history?.advisories.length ? (
+          <Card
+            title="Conversation history"
+            action={
+              <Button
+                onClick={() => {
+                  setHistoryError("");
+                  setRevision((current) => current + 1);
+                }}
+              >
+                Refresh conversation
+              </Button>
+            }
+          >
+            {!history ? (
+              <p role="status">{historyError || "Loading conversation…"}</p>
+            ) : history.advisories.length ? (
               history.advisories.map((advisory) => (
                 <article className="card surface" key={advisory.id}>
                   <h3>{advisory.subject}</h3>
-                  <p>{advisory.body}</p>
+                  <p className="live-message">{advisory.body}</p>
                   <p>
                     {advisory.sent_at
                       ? `Sent ${new Date(advisory.sent_at).toLocaleString()}`
@@ -167,6 +197,7 @@ export default function LiveAdvisory({
                   )}
                   {advisory.sent_at && (
                     <form
+                      className="form-grid"
                       onSubmit={async (event) => {
                         event.preventDefault();
                         const form = event.currentTarget;
@@ -181,11 +212,11 @@ export default function LiveAdvisory({
                           form.reset();
                       }}
                     >
-                      <label>
+                      <label className="full-line">
                         Record a farmer reply
-                        <textarea name="reply" required maxLength={8000} />
+                        <textarea name="reply" rows={3} required maxLength={8000} />
                       </label>
-                      <button className="text-action" disabled={busy}>
+                      <button className="button" disabled={busy}>
                         Record reply
                       </button>
                     </form>
@@ -195,7 +226,7 @@ export default function LiveAdvisory({
                     .map((reply) => (
                       <div key={reply.id}>
                         <h4>{reply.approved_at ? "Approved farmer reply" : "Farmer reply"}</h4>
-                        <p>{reply.body}</p>
+                        <p className="live-message">{reply.body}</p>
                         {reply.parsed ? (
                           <dl>
                             <dt>Irrigation source</dt>
