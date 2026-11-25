@@ -20,12 +20,21 @@ export type Plan = {
     depletion_mm: number;
     stress_mm: number;
     unmet_et_mm: number;
+    root_zone_available_mm: number;
+    excess_water_mm: number;
+    pump_hours: number;
+    max_c?: number | null;
+    precip_probability_pct?: number | null;
   }[];
 };
 
 export type Result = {
   weather_source: string;
   weather_retrieved_at: string;
+  weather_fallback_reason?: string | null;
+  soil_inputs_source?: string;
+  soil_measured_at?: string | null;
+  warnings: string[];
   recommended: string;
   plans: Record<string, Plan>;
   readily_available_mm: number;
@@ -113,6 +122,16 @@ export function DailyWaterBalance({
         labels={days.map((day) => day.date.slice(5))}
         unit=" mm"
       />
+      <h3>Forecast rain and crop water requirement</h3>
+      <LineChart
+        data={days.map((day) => day.crop_et_mm)}
+        secondary={days.map((day) => day.rain_mm)}
+        labels={days.map((day) => day.date.slice(5))}
+        unit=" mm"
+      />
+      <p>
+        Solid line shows modeled water requirement. Dashed line shows rainfall under this scenario.
+      </p>
       {reviewed && (
         <p>
           Reviewed pumping cost {show(reviewed.cost_pkr)} PKR · Readily available water{" "}
@@ -134,7 +153,8 @@ export function DailyWaterBalance({
               <th>Potential crop ET (mm)</th>
               <th>Rain (mm)</th>
               <th>Canal (m³)</th>
-              <th>Tubewell (m³)</th>
+              <th>Tubewell (m³ / h)</th>
+              <th>Root-zone water (mm)</th>
               <th>Depletion (mm)</th>
               <th>Unmet ET (mm)</th>
               <th>Decision</th>
@@ -152,7 +172,10 @@ export function DailyWaterBalance({
                 </td>
                 <td>{show(day.rain_mm)}</td>
                 <td>{show(day.canal_m3)}</td>
-                <td>{show(day.pump_m3)}</td>
+                <td>
+                  {show(day.pump_m3)} / {show(day.pump_hours)}
+                </td>
+                <td>{show(day.root_zone_available_mm)}</td>
                 <td>{show(day.depletion_mm)}</td>
                 <td>{show(day.unmet_et_mm)}</td>
                 <td>
@@ -200,6 +223,11 @@ export function DailyWaterBalance({
             <p>
               Suggested {show(chosen.canal_m3)} m³ canal and {show(chosen.pump_m3)} m³ tubewell{" "}
               {saved && <Chip>{label[saved.action]}</Chip>}
+            </p>
+            <p>
+              Forecast high {show(chosen.max_c)} °C · Rain probability{" "}
+              {show(chosen.precip_probability_pct)}% · Modeled excess water{" "}
+              {show(chosen.excess_water_mm)} mm.
             </p>
             <div className="field-actions">
               <Button disabled={busy} onClick={() => void record("accept")}>

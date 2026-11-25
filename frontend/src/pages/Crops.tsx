@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { acres, demoRegion } from "@/domain/data";
+import { acres } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
-import { Button, Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
-import { connected, request, startSeason } from "@/domain/registry";
+import { Button, Card, Chip, Empty, PageTitle, TextAction } from "@/components/ui";
+import { request, startSeason } from "@/domain/registry";
 
 export default function Crops({
   fields,
@@ -24,7 +24,7 @@ export default function Crops({
   const regionFields = fields.filter((field) => !region || field.region === region);
   const hasFields = regionFields.length > 0;
   useEffect(() => {
-    if (!connected || !hasFields) return;
+    if (!hasFields) return;
     const controller = new AbortController();
     request<string[]>("/crop-library", "GET", undefined, controller.signal)
       .then((rows) => {
@@ -42,10 +42,8 @@ export default function Crops({
         eyebrow="LAND & FIELD MANAGEMENT"
         title="Crop Monitoring"
         description="Track planting dates, estimated crop stages, and field activities by season."
-      >
-        {!connected && <Demo />}
-      </PageTitle>
-      {connected && regionFields.length > 0 && (
+      />
+      {hasFields && (
         <Card title="Start a crop season">
           <form
             className="form-grid"
@@ -89,14 +87,14 @@ export default function Crops({
             </label>
             <label>
               Crop
-              <input name="crop" list="pi-advisor-crops" required maxLength={160} />
-              <datalist id="pi-advisor-crops">
+              <input name="crop" list="available-crops" required maxLength={160} />
+              <datalist id="available-crops">
                 {library.map((name) => (
                   <option key={name} value={name} />
                 ))}
               </datalist>
               {library.length > 0 && (
-                <small>{library.length} PI-Advisor crop calendars available</small>
+                <small>{library.length} modeled crop calendars available</small>
               )}
             </label>
             <label>
@@ -116,7 +114,7 @@ export default function Crops({
       )}
       <Card
         title="Current crop season"
-        subtitle={connected ? region || "All locations" : demoRegion(region).district}
+        subtitle={region || "All locations"}
         action={
           <select
             aria-label="Filter by crop"
@@ -154,7 +152,9 @@ export default function Crops({
                     </td>
                     <td>{f.previous}</td>
                     <td>{f.planted}</td>
-                    <td>{f.stage}</td>
+                    <td>
+                      <TextAction onClick={() => open(f.id, "irrigation")}>{f.stage}</TextAction>
+                    </td>
                     <td>{acres(f.acres)} ac</td>
                   </tr>
                 ))}

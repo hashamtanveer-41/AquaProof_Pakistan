@@ -25,9 +25,10 @@ import {
   X,
 } from "lucide-react";
 import type { Farmer, Field, Page, Point, Region } from "@/domain/data";
-import { Brand, Card, Chip, Demo, Details, PageTitle } from "@/components/ui";
+import { Brand, Card, Chip, PageTitle } from "@/components/ui";
 import { FarmMap } from "@/features/map/FarmMap";
 import { RegisterModal, type Registration } from "@/features/registration/RegisterModal";
+import { ServiceHealth } from "@/pages/ServiceHealth";
 import {
   archiveField,
   ApiError,
@@ -45,6 +46,7 @@ const Registry = lazy(() => import("@/pages/Registry"));
 const Weather = lazy(() => import("@/pages/Weather"));
 const FieldIntelligence = lazy(() => import("@/pages/FieldIntelligence"));
 const LiveAdvisory = lazy(() => import("@/pages/LiveAdvisory"));
+const FieldHistory = lazy(() => import("@/pages/FieldHistory"));
 
 const navigation = [
   {
@@ -126,9 +128,15 @@ export default function App() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         const unauthorized = error instanceof ApiError && error.status === 401;
+        const databaseUnavailable = error instanceof ApiError && error.status === 503;
         setOfficerLogin(unauthorized);
+        if (unauthorized) setOfficerSession(false);
         setRegistryStatus(
-          unauthorized ? "Officer sign-in required." : "The registry could not connect to the API.",
+          unauthorized
+            ? "Officer sign-in required."
+            : databaseUnavailable
+              ? "The registry database is unavailable. Boundary saving and records need PostgreSQL with PostGIS."
+              : "The registry could not connect to the API.",
         );
       });
     return () => {
@@ -481,16 +489,16 @@ export default function App() {
                 aria-label="Officer profile"
                 aria-expanded={menu === "profile"}
               >
-                <span className="avatar">AK</span>
+                <span className="avatar">AO</span>
                 <span>
-                  <strong>Ayesha Khan</strong>
-                  <small>Agriculture Officer</small>
+                  <strong>Agriculture Officer</strong>
+                  <small>{officerSession ? "Officer session" : "Workspace access"}</small>
                 </span>
                 <ChevronDown size={13} />
               </button>
               {menu === "profile" && (
                 <div className="dropdown profile-menu">
-                  <p>{officerSession ? "OFFICER SESSION" : "DEMO OFFICER"}</p>
+                  <p>{officerSession ? "OFFICER SESSION" : "WORKSPACE ACCESS"}</p>
                   {officerSession && (
                     <button
                       onClick={() => {
@@ -552,6 +560,7 @@ export default function App() {
           )}
           {(!registryStatus ||
             page === "map" ||
+            (page === "settings" && !officerLogin) ||
             (page === "weather" && registryStatus !== "Loading registry…")) && (
             <Suspense
               fallback={
@@ -633,12 +642,7 @@ export default function App() {
                 />
               )}
               {page === "advisory" && (
-                <LiveAdvisory
-                  fields={fields}
-                  selectedFieldId={fieldId}
-                  onFieldUpdated={replaceField}
-                  openMap={() => go("map")}
-                />
+                <LiveAdvisory fields={fields} selectedFieldId={fieldId} openMap={() => go("map")} />
               )}
               {page === "irrigation" && (
                 <FieldIntelligence
@@ -649,30 +653,22 @@ export default function App() {
                 />
               )}
               {page === "reports" && (
-                <Card title={title}>
-                  <p>Live data for this page is pending integration.</p>
-                </Card>
+                <FieldHistory
+                  field={mapField}
+                  fields={visibleFields}
+                  select={setFieldId}
+                  openMap={() => go("map")}
+                />
               )}
               {page === "settings" && (
                 <>
                   <PageTitle
                     eyebrow="WORKSPACE PREFERENCES"
                     title="Settings"
-                    description="Configure your demonstration workspace and review its data policy."
-                  >
-                    <Demo />
-                  </PageTitle>
+                    description="Review service availability and accessibility settings."
+                  />
+                  <ServiceHealth />
                   <div className="grid-2">
-                    <Card title="Officer profile" action={<Chip dot>Demo account</Chip>}>
-                      <Details
-                        rows={[
-                          ["Name", "Ayesha Khan"],
-                          ["Role", "Agriculture Officer"],
-                          ["Department", "Agriculture Department"],
-                          ["Current location", locationName],
-                        ]}
-                      />
-                    </Card>
                     <Card title="Accessibility & localization" action={<Globe2 size={19} />}>
                       <div className="settings-toggles">
                         <label>
@@ -705,8 +701,8 @@ export default function App() {
                   <Card title="Help & data policy">
                     <p className="body-copy">
                       Registry changes, crop seasons, and correspondence are saved to the database.
-                      Weather data comes from Tomorrow.io and backup providers through the AquaProof
-                      API.
+                      OpenWeather supplies current conditions and forecasts. Open-Meteo supplies
+                      irrigation weather and modeled soil data.
                     </p>
                   </Card>
                 </>

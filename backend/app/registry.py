@@ -4,10 +4,17 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from psycopg.errors import CheckViolation, UniqueViolation
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
-from .database import connect
 from .assistant_access import queue_field_recheck
+from .database import connect
 from .science.crops import estimated_stage, local_today
 
 router = APIRouter(prefix="/api", tags=["registry"])
@@ -22,10 +29,12 @@ class Input(BaseModel):
 
 class FarmerInput(Input):
     name: Label
-    email: EmailStr
+    email: EmailStr | None = None
     phone: Label
     region: Label
     village: Label
+    district: Label | None = None
+    tehsil: Label | None = None
 
 
 class Boundary(Input):
@@ -71,11 +80,12 @@ class Registration(Input):
 
 
 FIELD_QUERY = """
-    SELECT f.id, f.farmer_id AS "farmerId", f.name, p.region, p.village,
+    SELECT f.id, f.farmer_id AS "farmerId", f.name, p.region, p.district, p.tehsil, p.village,
            f.soil, f.source, ST_AsGeoJSON(f.boundary, 15)::json AS boundary,
            ST_X(f.representative_point) AS longitude, ST_Y(f.representative_point) AS latitude,
            ST_Area(f.boundary::geography) / 4046.8564224 AS acres,
            i.settings AS irrigation_settings,
+           i.measured_at AS irrigation_measured_at,
            COALESCE(c.seasons, '[]'::json) AS seasons,
            COALESCE(m.events, '[]'::json) AS history
     FROM fields f JOIN farmers p ON p.id = f.farmer_id
@@ -86,12 +96,25 @@ FIELD_QUERY = """
         FROM crop_seasons WHERE field_id = f.id
     ) c ON true
     LEFT JOIN LATERAL (
-        SELECT json_agg(json_build_object(
-            'date', m.parsed->>'irrigation_date', 'label', 'Irrigation reported by email',
-            'detail', concat(m.parsed->>'source', ' · ', m.parsed->>'duration_minutes', ' minutes')
-        ) ORDER BY m.parsed->>'irrigation_date', m.id) AS events
-        FROM farmer_messages m JOIN advisories a ON a.id = m.advisory_id
-        WHERE a.field_id = f.id AND m.approved_at IS NOT NULL
+        SELECT json_agg(json_build_object('date', day, 'label', label, 'detail', detail)
+                        ORDER BY day, id) AS events
+        FROM (
+            SELECT m.id, m.parsed->>'irrigation_date' AS day, 'Irrigation reported by email' AS label,
+                   concat(m.parsed->>'source', ' · ', m.parsed->>'duration_minutes', ' minutes') AS detail
+            FROM farmer_messages m JOIN advisories a ON a.id = m.advisory_id
+            WHERE a.field_id = f.id AND m.approved_at IS NOT NULL
+            UNION ALL
+            SELECT o.id, o.measurements->>'day', 'Farmer observation approved by officer',
+                   concat_ws(' · ',
+                       CASE WHEN o.measurements->>'source' IS NOT NULL
+                            THEN concat(o.measurements->>'source', ' ', o.measurements->>'irrigation_minutes', ' minutes') END,
+                       CASE WHEN o.measurements->>'rainfall_mm' IS NOT NULL
+                            THEN concat(o.measurements->>'rainfall_mm', ' mm reported rain') END,
+                       CASE WHEN o.measurements->>'soil' IS NOT NULL
+                            THEN concat('Soil reported ', o.measurements->>'soil') END)
+            FROM assistant_observations o
+            WHERE o.field_id = f.id AND o.farmer_id = f.farmer_id AND o.status = 'approved'
+        ) history_rows
     ) m ON true
     WHERE f.archived_at IS NULL
 """
@@ -144,9 +167,10 @@ def irrigation_status(source, settings, today):
 
 def create_farmer(connection, farmer):
     return connection.execute(
-        """INSERT INTO farmers (id, name, email, phone, region, village)
-           VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-        (f"FMR-{uuid4().hex}", farmer.name, farmer.email, farmer.phone, farmer.region, farmer.village),
+        """INSERT INTO farmers (id, name, email, phone, region, village, district, tehsil)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+        (f"FMR-{uuid4().hex}", farmer.name, farmer.email or "", farmer.phone, farmer.region,
+         farmer.village, farmer.district, farmer.tehsil),
     ).fetchone()
 
 

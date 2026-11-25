@@ -32,19 +32,28 @@ export function AssistantMonitor({ field }: { field: Field }) {
   const path = "/assistant/fields/" + encodeURIComponent(field.id);
   const [enabled, setEnabled] = useState<boolean>();
   const [configured, setConfigured] = useState(false);
+  const [whatsapp, setWhatsapp] = useState(false);
+  const [worker, setWorker] = useState(false);
   const [monitor, setMonitor] = useState<Monitor>();
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
-  const [language, setLanguage] = useState<Language>("en");
+  const [language, setLanguage] = useState<Language>("ur");
 
   useEffect(() => {
     let current = true;
-    request<{ enabled: boolean; model_configured: boolean }>("/assistant/status")
+    request<{
+      enabled: boolean;
+      model_configured: boolean;
+      whatsapp_configured: boolean;
+      whatsapp_worker_enabled: boolean;
+    }>("/assistant/status")
       .then((data) => {
         if (!current) return;
         setEnabled(data.enabled);
         setConfigured(data.model_configured);
+        setWhatsapp(data.whatsapp_configured);
+        setWorker(data.whatsapp_worker_enabled);
       })
       .catch(() => {
         if (current) setStatus("Assistant status could not be loaded.");
@@ -61,7 +70,7 @@ export function AssistantMonitor({ field }: { field: Field }) {
       .then((data) => {
         if (!current) return;
         setMonitor(data);
-        setLanguage(data.identity?.language ?? "en");
+        setLanguage(data.identity?.language ?? "ur");
       })
       .catch((error) => {
         if (current)
@@ -78,15 +87,17 @@ export function AssistantMonitor({ field }: { field: Field }) {
   }
 
   async function submit(endpoint: string, values: unknown) {
-    if (busy) return;
+    if (busy) return false;
     setStatus("");
     setBusy(true);
     try {
       const result = await request<{ status: string }>(path + endpoint, "POST", values);
       setStatus(result.status);
       reload();
+      return true;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "The officer action failed.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -102,13 +113,12 @@ export function AssistantMonitor({ field }: { field: Field }) {
     });
   }
 
-  if (enabled === false || (enabled === undefined && !status)) return null;
   const identity = monitor?.identity;
   const usage = monitor?.usage;
   return (
     <Card
       title="Agricultural assistant"
-      subtitle="Verified email enrollment, daily advisories, corrective alerts and officer review."
+      subtitle="WhatsApp enrollment, daily advisories and officer review."
       action={
         <Button
           disabled={busy || !enabled}
@@ -122,7 +132,17 @@ export function AssistantMonitor({ field }: { field: Field }) {
       }
     >
       {status && <p role="status">{status}</p>}
-      {!enabled ? null : (
+      {enabled === undefined && !status && <p>Loading assistant status...</p>}
+      {enabled === false && (
+        <p>The assistant is disabled in this environment. WhatsApp messaging is paused.</p>
+      )}
+      {enabled && !whatsapp && (
+        <p>Green API credentials are required to enable WhatsApp messaging.</p>
+      )}
+      {enabled && whatsapp && !worker && (
+        <p>The WhatsApp worker is paused. Messages stay in the queue.</p>
+      )}
+      {enabled && (
         <>
           {!configured && (
             <p>OpenRouter routing is unconfigured. The assistant uses verified templates.</p>
@@ -142,22 +162,42 @@ export function AssistantMonitor({ field }: { field: Field }) {
                     value={language}
                     onChange={(event) => setLanguage(event.target.value as Language)}
                   >
-                    <option value="en">English</option>
                     <option value="ur">Urdu</option>
                     <option value="roman_ur">Roman Urdu</option>
+                    <option value="en">English</option>
                   </select>
                 </label>
                 <p>
                   {identity?.verified_at
-                    ? "Verified mailbox"
+                    ? "Verified WhatsApp number"
                     : identity
-                      ? "Awaiting mailbox verification"
+                      ? "Awaiting WhatsApp verification"
                       : "Farmer is not enrolled"}
                 </p>
-                <Button type="submit" disabled={busy}>
-                  Send mailbox verification
+                <Button type="submit" disabled={busy || !whatsapp}>
+                  {identity?.verified_at ? "Save preferred language" : "Send WhatsApp verification"}
                 </Button>
               </form>
+              {identity?.verified_at && (
+                <form
+                  className="form-grid"
+                  onSubmit={async (event) => {
+                    event.preventDefault();
+                    const form = event.currentTarget;
+                    const body = String(new FormData(form).get("body") ?? "");
+                    if (await submit("/messages", { body, request_id: crypto.randomUUID() }))
+                      form.reset();
+                  }}
+                >
+                  <label className="full-line">
+                    Officer message
+                    <textarea name="body" required maxLength={1800} />
+                  </label>
+                  <Button type="submit" disabled={busy || !whatsapp}>
+                    Queue WhatsApp message
+                  </Button>
+                </form>
+              )}
               {usage && (
                 <p>
                   Model calls recorded: {usage.calls} · Priced calls: {usage.priced_calls} ·
@@ -190,7 +230,7 @@ export function AssistantMonitor({ field }: { field: Field }) {
                           {message.kind} · {message.direction}
                         </strong>
                         <Chip tone={message.status === "review" ? "amber" : "neutral"}>
-                          {message.status}
+                          {message.status === "sent" ? "Accepted by Green API" : message.status}
                         </Chip>
                         <time dateTime={message.created_at}>
                           {new Date(message.created_at).toLocaleString()}

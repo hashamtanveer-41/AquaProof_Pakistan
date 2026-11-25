@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "format": "oxfmt src index.html package.json tsconfig.json vite.config.ts",
+    "format": "oxfmt src tests index.html package.json tsconfig.json vite.config.ts",
     "typecheck": "tsc --noEmit",
-    "format:check": "oxfmt --check src index.html package.json tsconfig.json vite.config.ts"
+    "format:check": "oxfmt --check src tests index.html package.json tsconfig.json vite.config.ts",
+    "test:browser": "node tests/browser.mjs"
   },
   "dependencies": {
     "@turf/area": "^7.4.0",
@@ -21,7 +22,6 @@
     "terra-draw-maplibre-gl-adapter": "^1.5.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

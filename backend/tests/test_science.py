@@ -2,7 +2,16 @@ from datetime import date, timedelta
 from unittest import TestCase
 
 from app.science.crops import crop_stage
-from app.science.irrigation import CanalTurn, IrrigationSettings, Scenario, Tubewell, apply_decisions, optimize
+from app.science.irrigation import (
+    CanalTurn,
+    IrrigationSettings,
+    PumpEnergy,
+    Scenario,
+    Tubewell,
+    apply_decisions,
+    optimize,
+    salinity_screen,
+)
 
 
 class IrrigationTest(TestCase):
@@ -41,6 +50,27 @@ class IrrigationTest(TestCase):
         self.assertAlmostEqual(plan["cost_pkr"], volume / 20 * 300, delta=0.6)
         doubled = self.run_plan(pump_pkr_hour=600)["plans"]["Tubewell only"]
         self.assertAlmostEqual(doubled["cost_pkr"], plan["cost_pkr"] * 2, delta=0.1)
+
+    def test_input_tariffs_and_scenario_caps(self):
+        self.settings.tubewell = Tubewell(
+            flow_m3_hour=20, hours_per_day=2, pkr_hour=0,
+            energy=PumpEnergy(fuel="diesel", units_per_hour=2.5, pkr_per_unit=280),
+        )
+        self.assertEqual(self.settings.tubewell.pkr_hour, 700)
+        result = self.run_plan(canal_supply_factor=.5, pump_available_from=self.start + timedelta(days=1),
+                               pump_hours_cap=1)
+        self.assertEqual(result["canal_capacity_m3"][2], 90)
+        self.assertEqual(result["pump_capacity_m3"], [0, 20, 20, 20, 20, 20, 20])
+        for day in result["plans"]["Tubewell only"]["daily"]:
+            self.assertLessEqual(day["pump_hours"], 1)
+            self.assertAlmostEqual(day["root_zone_available_mm"] + day["depletion_mm"], 100, places=2)
+
+    def test_salinity_flags_only_supported_lab_measurements(self):
+        self.assertIsNone(salinity_screen("Wheat", self.settings))
+        self.settings.soil_ece_ds_m = 6.5
+        self.assertTrue(salinity_screen("Wheat", self.settings)["above_threshold"])
+        self.assertFalse(salinity_screen("Cotton", self.settings)["above_threshold"])
+        self.assertIsNone(salinity_screen("Rice", self.settings))
 
     def test_mixed_sources_can_reduce_stress_and_cost(self):
         plans = self.run_plan()["plans"]

@@ -58,9 +58,6 @@ export type Observation = {
 export type AgricultureHour = {
   time: string;
   soil_temperature_c: number | null;
-  soil_moisture_surface_pct: number | null;
-  soil_moisture_10_40_pct: number | null;
-  soil_moisture_40_100_pct: number | null;
   soil_moisture_0_1_pct?: number | null;
   soil_moisture_1_3_pct?: number | null;
   soil_moisture_3_9_pct?: number | null;
@@ -80,7 +77,7 @@ export type WeatherHistory = WeatherSource & {
 };
 export type AgricultureWeather = WeatherSource & {
   hourly: AgricultureHour[];
-  soil_profile: "tomorrow" | "open-meteo";
+  soil_profile: "open-meteo";
 };
 
 export type FieldWeather = WeatherSource & {
@@ -90,6 +87,7 @@ export type FieldWeather = WeatherSource & {
   timezone: string;
   daily: DailyWeather[];
   hourly: Observation[];
+  interval_hours?: number;
   minutely?: Observation[];
 };
 

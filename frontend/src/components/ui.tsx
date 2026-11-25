@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowRight, Droplet, FlaskConical, Sprout } from "lucide-react";
+import { ArrowRight, Droplet, Sprout } from "lucide-react";
 
 export function Brand() {
   return (
@@ -52,15 +52,6 @@ export function Chip({
       {dot && <i />}
       {children}
     </span>
-  );
-}
-
-export function Demo({ children = "Demo data" }: { children?: ReactNode }) {
-  return (
-    <Chip tone="neutral">
-      <FlaskConical size={12} />
-      {children}
-    </Chip>
   );
 }
 

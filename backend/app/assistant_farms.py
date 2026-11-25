@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from .assistant_access import farmer_scope
 from .science import weather
 from .science.crops import CROP_NAMES, crop_stage, local_today
-from .science.irrigation import IrrigationSettings, Scenario, optimize
+from .science.irrigation import IrrigationSettings, Scenario, optimize, salinity_screen
 from .science.routes import weather_coordinates
 
 
@@ -70,14 +70,14 @@ def fresh(data, timestamp, maximum_age):
 
 
 def current_weather(farm):
-    data = weather.current(weather.point_query(*weather_coordinates(farm)))
+    data = weather.current(weather.point_query(*weather_coordinates(farm)), refresh=True)
     if not fresh(data, "time", timedelta(hours=3)):
-        raise HTTPException(502, "Current weather is stale or has no valid timestamp.")
+        raise HTTPException(502, f"Current weather from {data['source']} is stale or has no valid timestamp.")
     return data
 
 
 def fresh_forecast(farm):
-    data = weather.forecast(weather.point_query(*weather_coordinates(farm)))
+    data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(farm)), refresh=True)
     now = datetime.now(UTC)
     today = local_today()
     # Forecast retrieval time alone cannot prove the forecast covers the current hour.
@@ -90,14 +90,53 @@ def fresh_forecast(farm):
         except (KeyError, TypeError, ValueError):
             continue
     if not fresh(data, "retrieved_at", timedelta(minutes=10)) or not hourly:
-        raise HTTPException(502, "Forecast does not cover the current hour.")
+        raise HTTPException(502, f"Forecast from {data['source']} does not cover the current hour.")
     rows = [row for row in data["daily"] if date.fromisoformat(row["date"]) >= today]
     if not rows or rows[0]["date"] != today.isoformat() or any(
         row.get(key) is None or row[key] < 0 for row in rows for key in ("rain_mm", "eto_mm")
     ):
-        raise HTTPException(502, "Forecast is missing current rainfall or reference ET.")
+        raise HTTPException(502, f"Forecast from {data['source']} is missing current rainfall or reference ET.")
     return {"source": data["source"], "retrieved_at": data["retrieved_at"],
             "decision_time": now.isoformat(), "daily": rows}
+
+
+def field_weather_forecast(farm):
+    return weather.forecast(weather.point_query(*weather_coordinates(farm)), refresh=True)
+
+
+def live_conditions(farm):
+    results = {}
+    errors = {}
+
+    def soil_and_solar(field):
+        lat, lon = weather_coordinates(field)
+        data = weather.agriculture(lat, lon, refresh=True)
+        sample = next((row for row in data.get("hourly", []) if fresh(row, "time", timedelta(hours=2))), None)
+        return {"source": data["source"], "retrieved_at": data["retrieved_at"], "current_hour": sample}
+
+    for key, fetch in (
+        ("current", current_weather), ("weather_forecast", field_weather_forecast),
+        ("forecast", fresh_forecast), ("soil_and_solar", soil_and_solar),
+    ):
+        try:
+            results[key] = fetch(farm)
+        except HTTPException as error:
+            results[key] = None
+            errors[key] = error.detail
+    return {**results, "weather_errors": errors, "checked_at": datetime.now(UTC).isoformat()}
+
+
+def delivery_evidence_is_current(evidence):
+    readings = [evidence[key] for key in ("forecast", "weather_forecast", "current", "soil_and_solar")
+                if evidence.get(key)]
+    day = evidence.get("today", {}).get("date")
+    if day and day != local_today().isoformat():
+        return False
+    if "weather_errors" not in evidence:
+        return all(fresh(data, "retrieved_at", timedelta(hours=2)) for data in readings)
+    return (fresh(evidence, "checked_at", timedelta(minutes=10))
+            and all(fresh(data, "retrieved_at", timedelta(minutes=10)) for data in readings)
+            and (not evidence["current"] or fresh(evidence["current"], "time", timedelta(hours=3))))
 
 
 def pump_metrics(volume_m3, settings):
@@ -108,23 +147,18 @@ def pump_metrics(volume_m3, settings):
     return {"hours": round(hours, 2), "pkr": round(hours * settings.tubewell.pkr_hour, 2)}
 
 
-def recommendation(farm, reports=None):
+def recommendation(farm, reports=None, *, conditions=None):
     missing = []
     crop = CROP_NAMES.get((farm["crop"] or "").casefold())
     if not crop or not farm["planted"]:
         missing.append("crop")
     if not farm["settings"] or not fresh(farm, "measured_at", timedelta(hours=36)):
         missing.append("measurements")
-    try:
-        forecast = fresh_forecast(farm)
-    except HTTPException:
-        forecast = None
+    evidence = live_conditions(farm) if conditions is None else conditions
+    forecast = evidence["forecast"]
+    if not forecast:
         missing.append("weather")
-    try:
-        current = current_weather(farm)
-    except HTTPException:
-        current = None
-    evidence = {"missing": missing, "forecast": forecast, "current": current}
+    evidence = {**evidence, "missing": missing}
     if missing:
         return evidence
     settings = IrrigationSettings.model_validate(farm["settings"])
@@ -139,13 +173,10 @@ def recommendation(farm, reports=None):
     dry = optimize(forecast["daily"], crop, farm["planted"], farm["area_m2"], settings, Scenario(rain_factor=0))
     first = plan["plans"][plan["recommended"]]["daily"][0]
     dry_first = dry["plans"][dry["recommended"]]["daily"][0]
-    risks = [
-        name for name, key, predicate in (
-            ("heat", "max_c", lambda v: v >= 40),
-            ("frost", "min_c", lambda v: v <= 2),
-            ("heavy_rain", "rain_mm", lambda v: v >= 40),
-        ) if any(row.get(key) is not None and predicate(row[key]) for row in forecast["daily"][:2])
-    ]
+    risks = weather.field_weather_risks(forecast["daily"][:2])
+    salinity = salinity_screen(crop, settings)
+    if salinity and salinity["above_threshold"]:
+        risks.append("soil_salinity")
     if any(
         row["measurements"].get("soil") == "waterlogged"
         and row["measurements"].get("day") in (
@@ -157,7 +188,7 @@ def recommendation(farm, reports=None):
     needed = first["canal_m3"] + first["pump_m3"]
     dry_needed = dry_first["canal_m3"] + dry_first["pump_m3"]
     uncertainty = abs(needed - dry_needed) >= max(1, 0.2 * max(needed, dry_needed))
-    review = bool(risks or uncertainty or first["unmet_et_mm"] > 0 or first["stress_mm"] > 0)
+    review = bool(crop == "Rice" or risks or uncertainty or first["unmet_et_mm"] > 0 or first["stress_mm"] > 0)
     return {
         **evidence, "plan": plan, "today": first, "risks": risks,
         "uncertain_rain": uncertainty, "dry_today_m3": dry_needed,

@@ -1,7 +1,7 @@
 """Crop calendars and dual crop coefficients adapted from PI-Advisor."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,27 @@ CROPS = json.loads(Path(__file__).with_name("crop_data.json").read_text(encoding
 CROP_NAMES = {name.casefold(): name for name in CROPS}
 STAGES = ("initial", "development", "mid", "late")
 STAGE_LABELS = ("Initial", "Development", "Mid-season", "Late season")
+PUNJAB_CALENDAR = "https://agripunjab.gov.pk/system/files/Crops%20Life%20Calendar2.pdf"
+PUNJAB_MAIZE = "https://agripunjab.gov.pk/system/files/Maize-Cultivation-with-HEIS.pdf"
+
+
+def regional_reference(region, crop):
+    if region.strip().casefold() != "punjab":
+        return None
+    labels = {"Wheat": "Rabi wheat", "Rice": "Kharif rice", "Cotton": "Kharif cotton",
+              "Sugarcane": "Sugarcane", "Maize": "Spring and Kharif maize"}
+    if crop not in labels:
+        return None
+    return {
+        "label": labels[crop],
+        "source": PUNJAB_MAIZE if crop == "Maize" else PUNJAB_CALENDAR,
+        "guidance": (
+            "Punjab HEIS reference sowing windows are 15 January through February for spring and "
+            "10 July to 10 August for Kharif. Check northern-area and cultivar guidance. "
+            "The generic modeled maturity can differ substantially from local grain maize maturity."
+            if crop == "Maize" else "Consult Punjab's regional crop calendar and confirm the local variety."
+        ),
+    }
 
 
 def local_today():
@@ -27,6 +48,18 @@ def crop_stage(crop: str, planted: date, day: date):
         if days < 0:
             return label
     return "Beyond modeled season"
+
+
+def lifecycle(crop, planted, today):
+    stages = []
+    start = planted
+    for key, label in zip(STAGES, STAGE_LABELS, strict=True):
+        end = start + timedelta(days=CROPS[crop]["lengths"][key])
+        stages.append({"name": label, "starts_on": start, "ends_before": end})
+        start = end
+    return {"crop": crop, "planting_date": planted, "as_of": today,
+            "current_stage": crop_stage(crop, planted, today), "modeled_maturity": start,
+            "stages": stages, "provenance": "PI-Advisor generic crop calendar; local cultivar review required."}
 
 
 def crop_parameters(crop: str, planted: date, day: date):

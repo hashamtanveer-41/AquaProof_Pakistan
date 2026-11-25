@@ -1,422 +1,131 @@
-# AquaProof Pakistan 🌾💧
+# AquaProof Pakistan
 
-> **AI-Powered Agricultural Advisory & Irrigation Management Platform**  
-> *Government-operated farm intelligence — built for the Hackathon by a 5-member engineering & research team.*
+AquaProof is an agricultural officer workspace for farm boundaries, crop seasons, weather-based irrigation planning, and farmer correspondence. Farmers use WhatsApp from a verified number. Officers manage enrollment, advisories and conversations in the dashboard.
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org)
-[![React](https://img.shields.io/badge/React-19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-38B2AC.svg?logo=tailwind-css&logoColor=white)](https://tailwindcss.com)
-[![Vite](https://img.shields.io/badge/Vite-6.0-646CFF.svg?logo=vite&logoColor=white)](https://vitejs.dev)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-PostGIS-4169E1.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-API-412991.svg?logo=openai&logoColor=white)](https://platform.openai.com)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## Local setup
 
----
+Docker Compose runs the React web app, the FastAPI backend, and PostgreSQL 16 with PostGIS. Copy `.env.example` to `.env` for a new installation. Keep an existing `.env` and merge the new variable names into it. Fill in a database password and an independently generated officer access token of at least 32 characters.
 
-## 📖 Table of Contents
-
-- [Overview](#-overview)
-- [The Problem & Value Proposition](#-the-problem--value-proposition)
-- [Key Features](#-key-features)
-- [System Architecture](#-system-architecture)
-- [Team Roster & Ownership](#-team-roster--ownership)
-- [Repository Structure](#-repository-structure)
-- [Getting Started](#-getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Backend Setup (FastAPI)](#backend-setup-fastapi)
-  - [Frontend Setup (React + Vite)](#frontend-setup-react--vite)
-  - [Email Testing with Mailpit](#email-testing-with-mailpit)
-- [API Reference](#-api-reference)
-- [Testing & Quality Assurance](#-testing--quality-assurance)
-- [License](#-license)
-
----
-
-## ⚡ Overview
-
-**Current status.** AquaProof supports geographic field registration, crop seasons, scheduled email, field-level weather, and irrigation scenarios. Farm Map opens over Pakistan in MapLibre GL JS with the OpenFreeMap Liberty vector basemap. Weather and irrigation use the saved field's PostGIS representative point.
-
-**AquaProof Pakistan** gives government agricultural officers a digital record of every registered farm and uses location-specific weather data, FAO-56 scientific simulation, and AI communication to deliver timely, personalized irrigation and crop-management guidance — even to farmers who don't use smartphones.
-
-Officers manage farms through a central web dashboard. Farmers receive recommendations via email (simulating SMS for the prototype). Every advisory is generated from that farm's actual polygon boundary, crop stage, soil profile, and local weather — not generic templates.
-
----
-
-## 🌾 The Problem & Value Proposition
-
-- **Pakistan's Water Crisis:** Agriculture consumes over **90% of Pakistan's freshwater** while irrigation efficiency remains critically low due to poor timing, over-watering, and lack of farm-specific guidance.
-- **No Farm-Level Intelligence:** Existing advisory systems issue blanket district-level recommendations. A Punjab wheat farmer and a KPK maize farmer receive the same guidance despite having entirely different water sources, rainfall, and crop stages.
-- **The AquaProof Solution:**
-  1. **Persistent Farm Registry:** Every participating farm has a permanent digital profile — geographic boundary, crop history, water sources, and irrigation records — stored and queryable by location.
-  2. **Scientific Irrigation Engine:** Implements the internationally validated FAO-56 methodology to calculate exactly how much water each crop needs at each growth stage, accounting for local evapotranspiration and soil conditions.
-  3. **Canal vs. Tubewell Optimizer:** Weighs the farmer's registered canal turn schedule against tubewell pumping costs and rainfall forecasts to recommend the most cost-effective irrigation strategy.
-  4. **AI-Powered Communication:** Farmers reply in English, Urdu, or Roman Urdu. OpenAI extracts structured data from natural language replies, updates farm records, and generates a recalculated advisory — all automatically.
-
----
-
-## 🎯 Key Features
-
-### 1. 🗺️ Interactive Farm Mapping & Permanent Registration
-- Government officers draw exact farm boundaries by clicking points on a live map (MapLibre GL JS + Terra Draw).
-- Field area is calculated server-side from the saved geographic polygon via PostGIS geography functions.
-- Each farmer can have multiple fields; each field maintains an independent crop history.
-- The API accepts GeoJSON polygons and stores valid WGS84 boundaries in PostGIS with a spatial index.
-
-### 2. 🌱 Farmer-Specific Crop Monitoring
-- System records crop type, variety, planting date, soil profile, and irrigation source per field.
-- Crop growth stage is estimated from planting date and the PI-Advisor crop calendar. Local weather drives daily crop water demand.
-- Full seasonal history is preserved after harvest. Officers can review past crop rotations and irrigation events without overwriting older records.
-
-### 3. 💧 Scientific Irrigation & Smart Decision Engine
-- Implements **FAO-56 crop-water balance** methodology (adapted from PI-Advisor) — the same standard used by international agricultural organizations.
-- Answers four questions for every farm: how much water is needed, when to irrigate, whether to use canal or tubewell, and what happens if the forecast changes.
-- The SciPy optimizer compares no irrigation, canal only, tubewell only, and mixed supply where configured. It prioritizes modeled crop stress and then pumping cost.
-- Water volume formula: `Volume (m³) = Depth (mm) × Area (m²) ÷ 1000`
-
-### 4. 📧 Email Advisories and Reply Review
-
-- Officers approve emails for immediate or scheduled SMTP delivery. APScheduler processes the delivery queue.
-- A configured OpenAI-compatible endpoint can extract irrigation source, duration, and date from Urdu, Roman Urdu, or English replies.
-- Officers approve complete parsed replies before they appear in the field history. Automatic recommendations depend on the planned scientific engine.
-- **Mailpit** captures outgoing email for local testing.
-
-### 5. 🏛️ Government Officer Dashboard
-- Clean, authoritative dashboard showing all registered farms, their current crop stage, last advisory, next recommended action, and full conversation history.
-- Current conditions, forecasts, and agricultural weather layers per field from **Tomorrow.io**, with backup providers.
-- Advisory center with one-click send, approval flow, and message log.
-- Irrigation cost comparison chart (Recharts) — canal vs. tubewell, with estimated pumping expense.
-
----
-
-## 🏗️ System Architecture
-
-```mermaid
-flowchart TD
-    Officer([Government Officer / Browser])
-    Farmer([Farmer / Email])
-
-    subgraph Frontend ["Frontend (React 19 + Vite + MapLibre)"]
-        Dashboard[Officer Dashboard]
-        MapEditor[Farm Map & Polygon Editor]
-        WeatherPanel[Weather & Crop Panel]
-        AdvisoryUI[Advisory Center & Message Log]
-    end
-
-    subgraph Backend ["FastAPI Backend (:8000)"]
-        Router[API Gateway & Router]
-        FarmSvc[Farm & Crop Service]
-        SciEngine[FAO-56 Scientific Engine]
-        Optimizer[Canal vs Tubewell Optimizer]
-        WeatherSvc[Weather Service]
-        AISvc[OpenAI Message Parser]
-        EmailSvc[Email Advisory Service]
-        Scheduler[APScheduler — Daily Advisory Jobs]
-        DB[(PostgreSQL + PostGIS)]
-    end
-
-    subgraph External ["External APIs"]
-        Tomorrow[Tomorrow.io Weather API]
-        OpenAI[OpenAI Structured Outputs]
-        Mailpit[Mailpit — Local SMTP & Inbox]
-    end
-
-    Officer --> Dashboard
-    Dashboard --> Router
-    MapEditor -->|GeoJSON polygon| FarmSvc
-    FarmSvc --> DB
-    WeatherSvc --> Tomorrow
-    SciEngine --> Optimizer
-    Optimizer --> Router
-    Scheduler --> EmailSvc
-    EmailSvc --> Mailpit
-    Mailpit -->|Farmer replies| Farmer
-    Farmer -->|Email reply| AISvc
-    AISvc --> OpenAI
-    AISvc --> FarmSvc
+```sh
+docker compose up --build
 ```
 
----
+Open `http://127.0.0.1:8080` and enter the officer token.
 
-## Planned open-source integrations
+The API applies migrations on startup and retains data in the Compose volume. Use `docker compose down` to stop the services. Preserve the database volume and back it up before upgrades. Migrations 010 and 011 add WhatsApp enrollment and separate its queue from historical email records. Migration 012 sets Urdu as the default for new enrollments and retains saved language preferences.
 
-These integrations are planned for a functional government-operated irrigation management platform. Inspect each project's documentation, source code, and license before implementation.
+### Run without Compose
 
-1. **PI-Advisor** — Use its irrigation algorithms, soil-water balance calculations, and crop water requirement models as the scientific foundation. [PI-Advisor](https://github.com/wateraccounting/PI-Advisor)
-2. **MapLibre GL JS, OpenFreeMap, and Terra Draw** provide the vector basemap and boundary editor. Open-Meteo provides place search. Turf estimates draft area and PostGIS calculates saved area. [OpenFreeMap](https://openfreemap.org/quick_start/) · [Terra Draw](https://github.com/JamesLMilner/terra-draw)
-3. **PostgreSQL and PostGIS** — Persist farm boundaries, farmer profiles, irrigation schedules, and historical records. [PostgreSQL](https://github.com/postgres/postgres) · [PostGIS](https://github.com/postgis/postgis)
-4. **Tomorrow.io** provides field forecasts, current conditions, and plan-dependent agricultural and historical weather data. [Tomorrow.io API docs](https://docs.tomorrow.io/reference/welcome)
-5. **SciPy** — Develop Pakistan-specific Warabandi scheduling, canal water allocation, tubewell cost optimization, and what-if simulations. [SciPy](https://github.com/scipy/scipy)
-6. **FastAPI** — Implement backend APIs using a modular architecture. [FastAPI](https://github.com/fastapi/fastapi)
-7. **Mailpit and SMTP/IMAP** — Implement two-way email communication to simulate farmer SMS interactions. [Mailpit](https://github.com/axllent/mailpit)
+Use Python 3.12+, Node.js as specified in `frontend/package.json`, pnpm, and PostgreSQL with PostGIS. Create a database, configure `DATABASE_URL` in the process environment, and set the officer and provider variables before starting the API. The Compose `.env` file is loaded by Compose. For native development, source a secure environment or use Uvicorn's `--env-file` for the process environment.
 
-### Future implementation instructions
-
-- Inspect the existing AquaProof codebase before making changes, and verify repository URLs and licenses.
-- Reuse relevant implementations and algorithms where appropriate. Install libraries directly instead of cloning entire repositories unnecessarily.
-- Preserve the existing UI and PRD requirements. Keep dependencies minimal and avoid paid APIs.
-- Implement each integration sequentially and test it before proceeding.
-- Use real data where available and maintain proper open-source attribution.
-- Ensure the modules work together as one functional government-operated irrigation management platform, and continue implementation until all integrations are functional.
-
-## 👥 Team Roster & Ownership
-
-| Member | Role | Key Responsibilities |
-| :--- | :--- | :--- |
-| **Asfand** | **Backend Lead, Mapping & AI Integration** | FastAPI setup, PostgreSQL/PostGIS schema and migrations, farm/field/crop APIs, MapLibre mapping and Terra Draw boundary editing, OpenAI message parsing, SMTP email service, APScheduler advisory jobs, Docker Compose, branch integration, and frontend/backend consistency for these features. |
-| **Hasham** | **Scientific Engine & Weather** | FAO-56 crop-water balance module (adapted from PI-Advisor), weather integration, crop stage estimation, canal vs. tubewell cost optimizer, synthetic demo dataset. |
-| **Hamza** | **Frontend & UI/UX** | React dashboard, weather panel, irrigation chart (Recharts), advisory center UI, conversation panel, full backend API integration. |
-| **Talal** | **Research, Docs & Presentation** | Problem research (Pakistani canal water practices, FAO-56 methodology), README, architecture diagrams, API guide, competition slides, live demo script. |
-| **Sarim** | **QA, Testing & Validation** | Pytest unit & integration tests, farm boundary & area validation, simulation regression tests against PI-Advisor reference fixtures, email delivery & AI parsing tests, bug tracker. |
-
----
-
-## 📁 Repository Structure
-
-The tree below describes the target layout. The implemented backend uses app/registry.py, app/communications.py, and numbered SQL migrations.
-
-```text
-aquaproof-pakistan/
-│
-├── frontend/              # React + Vite + TypeScript
-│   ├── public/          # Branding and demo satellite imagery
-│   ├── src/
-│   │   ├── app/         # Dashboard shell, navigation, and state
-│   │   ├── pages/       # Dashboard views
-│   │   ├── features/    # Map and registration workflows
-│   │   ├── components/  # Shared UI components
-│   │   ├── domain/      # Demo data and irrigation calculations
-│   │   ├── styles/      # Global dashboard styles
-│   │   └── main.tsx     # React entry point
-│   ├── package.json
-│   ├── pnpm-lock.yaml
-│   └── vite.config.ts
-│
-├── backend/                         # Python 3.12+ / FastAPI
-│   ├── app/
-│   │   ├── main.py                  # FastAPI entry point & CORS
-│   │   ├── database.py              # SQLAlchemy engine & session factory
-│   │   │
-│   │   ├── models/                  # SQLAlchemy ORM models (10 entities)
-│   │   ├── schemas/                 # Pydantic request/response schemas
-│   │   │
-│   │   ├── routes/
-│   │   │   ├── farmers.py           # /api/farmers
-│   │   │   ├── fields.py            # /api/fields
-│   │   │   ├── crops.py             # /api/crop-seasons
-│   │   │   ├── weather.py           # /api/fields/{id}/weather
-│   │   │   ├── irrigation.py        # /api/fields/{id}/simulate & /optimize
-│   │   │   ├── advisories.py        # /api/advisories
-│   │   │   └── messages.py          # /api/messages/inbound
-│   │   │
-│   │   ├── services/
-│   │   │   ├── weather_service.py   # Backend weather integration
-│   │   │   ├── canal_service.py     # Canal turn schedule management
-│   │   │   ├── irrigation_engine.py # FAO-56 soil-water balance wrapper
-│   │   │   ├── optimizer.py         # Canal vs tubewell SciPy optimizer
-│   │   │   ├── ai_service.py        # OpenAI structured message parsing
-│   │   │   ├── advisory_service.py  # Advisory generation & scheduling
-│   │   │   └── email_service.py     # SMTP send + Mailpit integration
-│   │   │
-│   │   ├── scientific/
-│   │   │   └── fao56/               # FAO-56 crop-water balance module
-│   │   │       ├── __init__.py
-│   │   │       ├── crop_coefficients.py
-│   │   │       ├── water_balance.py
-│   │   │       └── crop_parameters.json
-│   │   │
-│   │   └── worker.py                # APScheduler background jobs
-│   │
-│   ├── migrations/                  # Alembic migration scripts
-│   ├── tests/                       # Pytest unit & integration tests
-│   └── requirements.txt
-│
-├── data/
-│   ├── crop_parameters/             # FAO-56 crop coefficient tables
-│   ├── reference_weather/           # NASA POWER historical reference data
-│   └── demo/                        # Synthetic Punjab wheat farm demo dataset
-│
-├── docs/
-│   ├── architecture.md
-│   ├── api-contract.md
-│   ├── er-diagram.md
-│   └── research-sources.md
-│
-├── docker-compose.yml
-├── .env.example
-└── README.md
+```sh
+cd backend
+python -m venv .venv
+# Activate the virtual environment for your shell.
+python -m pip install -r requirements.txt
+python -m app.database
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
----
+Start the frontend in a separate shell.
 
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **Frontend** requires Node.js 20.19+ on the 20.x line or Node.js 22.12+, and pnpm 10.34.3.
-- **Python**: v3.12 or higher
-- **Docker & Docker Compose**: v2.0+
-- Docker Compose provides **PostgreSQL and PostGIS** for the persistent database.
-
----
-
-### Backend Setup (FastAPI)
-
-Set `TOMORROW_API_KEY` in the repository-root `.env` file or the environment that runs Compose. Compose passes it to the backend. Then start the dashboard, API, PostgreSQL with PostGIS, and Mailpit from the repository root.
-
-```bash
-docker compose up -d --build
-```
-
-Compose applies SQL migrations on startup and stores records in a named volume. Open the [connected dashboard](http://localhost:8080), [API documentation](http://localhost:8000/docs), or [service health](http://localhost:8000/health).
-
-### Frontend Setup (React + Vite)
-
-Use Vite for local frontend development with the AquaProof backend running on port 8000. In PowerShell:
-
-```powershell
+```sh
 cd frontend
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Vite proxies `/api` to the local backend. Set `VITE_API_URL` to override the backend address for a separate deployment. For a native development backend, start Uvicorn from `backend` with `--env-file ../.env` or set the variables in its process environment.
+Vite proxies `/api` to port 8000. Leave `AQUAPROOF_BACKGROUND_WHATSAPP=0` in development and during QA.
 
-### Farm map and boundary drawing
+## Configuration
 
-- The Liberty vector basemap uses OpenStreetMap data and requires no API key. OpenStreetMap raster tiles provide a fallback if the vector style fails to load. Set `VITE_MAP_TILES` at build time to use an approved OpenStreetMap raster tile service directly. Attribution appears on the map. [OpenFreeMap](https://openfreemap.org/quick_start/) · [OpenStreetMap tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
-- Satellite and Hybrid are available when the deployment supplies an authorized satellite basemap. Set `VITE_SATELLITE_TILES` to a browser-accessible HTTPS XYZ template with `{z}`, `{x}`, and `{y}`. Supply `VITE_SATELLITE_ATTRIBUTION`, `VITE_SATELLITE_LICENSE_URL`, and `VITE_SATELLITE_MAX_ZOOM` for the source. Hybrid adds roads and place labels from the Liberty style.
-- Set `VITE_SATELLITE_DIGITIZATION_AUTHORIZED=true` after verifying in writing that the imagery covers the intended Pakistani farm areas and that its terms permit display, boundary tracing, and storage and export of the resulting polygons. Use a tile endpoint that allows your dashboard origin. These build values are public. Any provider that requires private credentials must be served through an authorized tile gateway.
-- Use verified farm boundary information when placing vertices. Map search accepts place names and decimal coordinates in latitude, longitude order. Saved polygons reference farmers and store a PostGIS point inside each polygon. The point updates automatically when the boundary changes.
-- The draft area is a Turf estimate. Saved area is taken from PostGIS geography and shown in acres, kanals, marlas, and hectares using 8 kanals and 160 marlas per acre. Irrigation colours reflect the saved supply configuration and today's canal turn. Removing a field archives it and retains its history.
+| Environment variable | Purpose |
+| --- | --- |
+| `DATABASE_URL`, `POSTGRES_PASSWORD` | Database access. Compose builds the connection string. Use a URL-safe Compose password or provide a properly encoded URL in a native deployment. |
+| `ASSISTANT_OFFICER_TOKEN` | Shared officer access token. APIs require it with the assistant on or off. Use `AQUAPROOF_ALLOW_UNAUTHENTICATED_DEV=1` only on a disposable local instance with the assistant off. |
+| `ASSISTANT_ENABLED`, `ASSISTANT_REPLY_SECRET` | Set `ASSISTANT_ENABLED=1` for verified farmer scheduling and conversations. Sign reply tokens with a separate random secret of at least 32 characters. Rotation invalidates outstanding tokens. |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_APPROVED_PROVIDERS` | Defaults to `openai/gpt-4o`. Configure the approved provider allowlist. Synthetic testing of the Azure route passed with zero data retention and collection disabled. Obtain deployment approval before allowing any provider to process farmer data. |
+| `ARCGIS_API_KEY` | Private geocoding credential used by the backend. |
+| `ARCGIS_BROWSER_TOKEN` | Separate public token with basemap-only privileges and allowed referrers for the actual deployment. The runtime config refuses to expose a token equal to the geocoding key. Never put the private key in a Vite variable. |
+| `ARCGIS_SERVER_BASEMAPS` | Set to `1` to serve ArcGIS v2 styles and relay tiles through the backend with `ARCGIS_API_KEY` when no separate browser token is configured. |
+| `ARCGIS_DIGITIZATION_AUTHORIZED` | Optional authorization for ArcGIS Street editing. Satellite and Hybrid are view-only in the current workflow. |
+| `OPENWEATHER_API_KEY` | Server-side credential for current conditions and the five-day, three-hour forecast. |
+| `OPEN_METEO_URL`, `OPEN_METEO_API_KEY`, `OPEN_METEO_GEOCODING_URL`, `NASA_POWER_URL` | Optional overrides for authorized weather and location services. Use the licensed Open-Meteo endpoint and key for production as applicable. |
+| `GREEN_API_ID_INSTANCE`, `GREEN_API_TOKEN_INSTANCE`, `GREEN_API_BASE_URL` | Server-only WhatsApp settings. Use the HTTPS API URL shown in the instance console. |
+| `AQUAPROOF_BACKGROUND_WHATSAPP`, `AQUAPROOF_HEALTH_ENABLED` | WhatsApp polling, sending and scheduling require explicit activation. Provider checks default to enabled. |
+| `VITE_MAP_TILES` | Optional browser-visible, nonsecret street tile configuration. |
 
-### Field weather and irrigation
+Provider keys pasted into chat should be rotated before deployment and loaded through your secret store into runtime environment variables.
 
-- In Farm Map, enter a place name or decimal coordinates in `latitude, longitude` order. After tracing is authorized, draw the parcel and link it to a farmer. A farmer's region is a label for filtering records. Weather and irrigation use the point inside the parcel stored in PostGIS.
-- Weather & Canal Data shows Tomorrow.io current conditions plus hourly and daily forecasts. Search a place name or decimal coordinates, or select a registered field to see its saved canal schedule alongside the forecast. The daily table includes rainfall, peak precipitation probability, and reference evapotranspiration (ET₀). [Tomorrow.io forecast](https://docs.tomorrow.io/reference/weather-forecast) · [Core weather fields](https://docs.tomorrow.io/reference/data-layers-core)
-- Registered fields also support on-demand recent weather, archive dates, and hourly soil moisture, soil temperature, and solar irradiance. Availability depends on the key's access and data coverage. Archive queries accept up to 31 UTC days, ending at least seven days ago, and can consume archive tokens. [Recent history](https://docs.tomorrow.io/reference/weather-recent-history) · [Historical API](https://docs.tomorrow.io/reference/historical-overview) · [Soil layers](https://docs.tomorrow.io/reference/land) · [Solar layers](https://docs.tomorrow.io/reference/solar)
-- Each weather reload makes a new provider request. If Tomorrow.io is unavailable or returns unusable data, Open-Meteo backs up the forecast, current conditions, recent modeled weather, and soil and solar data. NASA POWER backs up the historical archive. Results show the provider and retrieval time. Provider values follow each provider's update schedule. [Open-Meteo forecast API](https://open-meteo.com/en/docs) · [NASA POWER daily API](https://power.larc.nasa.gov/docs/services/api/temporal/daily/)
-- AquaProof API responses use `Cache-Control: no-store`. Weather panels, searches, and conversation history have refresh controls. The profile menu can also refresh the workspace registry.
-- In Crop Monitoring, save the crop and planting date. In Irrigation Intelligence, enter the field's measured root-zone and surface water parameters, current depletion and application efficiency. Add the farmer's first Warabandi turn date, recurrence, duration and flow, or the tubewell flow, daily hours and pumping cost, as appropriate.
-- Run a baseline or change rainfall, canal timing or pumping cost. Root-zone calculations use the PI-Advisor crop calendar and an FAO-56 balance with estimated surface evaporation. The plan uses consecutive forecast days with usable rainfall and ET₀ and reports the provider. Canal capacity comes from the entered roster and flow, and irrigation windows are modeled at daily resolution.
-- In **Irrigation Intelligence → PI-Advisor irrigation planner**, run the baseline and select a forecast day to accept, skip, adjust or reopen an irrigation decision. Each revision stays with the crop season in PostgreSQL. The calculation fixes the saved volumes for reviewed days and recomputes the remaining forecast, including depletion, pumping cost and supply conflicts. Decisions record intended irrigation. Updates to measured depletion and records of completed irrigation are separate workflows. [PI-Advisor workflow](https://github.com/wateraccounting/PI-Advisor#usage)
-- **Explain this plan with AI** uses the configured OpenAI-compatible API. It sends the modeled plan and weather context without farmer contact details. The explanation stays separate from the calculated quantities and costs.
+## Officer workflows
 
-To add two clearly labeled synthetic registry examples in Sindh and Balochistan, run:
+- **Farm map** uses MapLibre and Terra Draw. Search registry records or Pakistani places, or enter latitude and longitude. Draw and edit single-ring farm boundaries, undo or redo, import a single GeoJSON or KML polygon, and export visible boundaries. PostGIS calculates saved area. The map switches between irrigation status and crop stage and can display the selected field's current weather marker.
 
-```bash
-docker compose exec api python -m app.science.demo
+Open street is the default and stays selected during drawing, editing and import. From optional ArcGIS Satellite or Hybrid, opening the editor switches to street while keeping the viewport. The previous view returns after the edit is saved or discarded.
+
+Configure imagery through the ArcGIS runtime settings above. Remove obsolete `VITE_SATELLITE_*` settings from older deployments.
+
+- **Crop and irrigation** records crop and planting date, shows the estimated crop-stage timeline, and simulates consecutive forecast days using field inputs. Compare forecast rain, canal allocations and delays, and tubewell availability and energy costs. Accept, skip, adjust or reopen an irrigation decision from the baseline. These decisions record intentions. Farmer-reported observations and field measurements have their own review paths.
+- **Advisory Center** enrolls farmer WhatsApp numbers, queues officer messages, schedules daily and changed-weather advisories, and reviews farmer replies and proposed observations. New enrollments default to Urdu. Officers can select Roman Urdu or English. Farmer messages emphasize practical field checks, irrigation technique and qualitative weather guidance. Numerical model results and sources are available in officer evidence. Historical email activity remains in field history.
+- **Reports and Settings** show saved field activity and health checks for weather, map services, Green API and OpenRouter.
+
+OpenWeather serves current conditions and forecast intervals. Open-Meteo supplies complete local-day rain and FAO reference evapotranspiration for irrigation calculations, and modeled soil and solar data. NASA POWER supplies the historical archive.
+
+### WhatsApp setup
+
+1. Connect a dedicated WhatsApp number to Green API and configure the three instance environment variables. Enable incoming notifications (`incomingWebhook=yes`) and leave the webhook URL empty to use the HTTP notification queue. Keep other consumers off this instance.
+2. Check the Green API row in Settings. Enable the assistant and set a distinct reply secret. Enable `AQUAPROOF_BACKGROUND_WHATSAPP=1` in an isolated staging deployment with a controlled contact first. The worker polls Green API and deletes each notification after local processing.
+3. Register a farmer with a WhatsApp number. Use **Send WhatsApp verification** from Advisory Center. The farmer uses WhatsApp **Reply** on the verification message and types **ہاں** or `YES`. To ask a question, reply to the latest AquaProof message or include its `AQ-REPLY` line. Each reply can continue the conversation using the new token. Tokens expire after seven days and can be used once by the matching number. Only an officer-requested verification can be delivered before the registered number is verified.
+4. Green API acceptance is recorded separately from farmer responses. Timeout after possible provider acceptance goes to officer review. A changed registry number revokes verification and existing reply tokens. The worker never converts historical email rows into WhatsApp sends.
+
+[Green API HTTP notification queue](https://green-api.com/en/docs/api/receiving/technology-http-api/ReceiveNotification/) and [Green API sendMessage](https://green-api.com/en/docs/api/sending/SendMessage/)
+
+For automated farm answers and advisories, the worker loads the selected farmer-owned field and refreshes current conditions and the short-term forecast from OpenWeather with the Open-Meteo fallback. It also refreshes Open-Meteo rainfall, reference ET, and modeled soil and solar data. NASA POWER remains the historical weather source. Provider failures are recorded with the officer evidence. Farm messages with weather evidence older than ten minutes go to officer review. Irrigation guidance still requires fresh measurements and a usable forecast.
+
+## Architecture and API
+
+React and TypeScript live under `frontend/src`. Nginx serves the production bundle and proxies `/api` to FastAPI. The backend uses psycopg and PostGIS, APScheduler for communications and health checks, and SciPy for constrained irrigation scenarios. The assistant reader uses a transaction-local farmer scope and a restricted PostgreSQL role with row-level security.
+
+| Route | Contract |
+| --- | --- |
+| `GET /health`, `GET /ready` | Process liveness and database connectivity. |
+| `GET /api/registry`, `POST /api/registrations` | Current officer registry and atomic owner/field registration. |
+| `GET/PATCH/DELETE /api/fields/{id}` | Retrieve, update a WGS84 polygon, or archive a field. |
+| `GET /api/map/config`, `/api/map/search`, `/api/map/suggest`, `/api/map/reverse` | Browser basemap configuration and location queries. Coordinates are WGS84. |
+| `POST /api/crop-seasons`, `GET /api/fields/{id}/crop-lifecycle` | Record planting and read model stage intervals. |
+| `GET /api/fields/{id}/weather` and its current, recent, agriculture and history subroutes | Coordinate-based weather and source metadata. |
+| `GET/PUT /api/fields/{id}/irrigation-settings` | Officer-entered soil and water inputs. |
+| `POST /api/fields/{id}/simulate`, `PUT /api/fields/{id}/irrigation-decisions/{date}` | Read-only what-if model and revision-checked baseline decisions. |
+| `GET /api/assistant/status`, `GET /api/assistant/fields/{id}` | WhatsApp and model configuration, enrollment status, messages and officer review queue. |
+| `POST /api/assistant/fields/{id}/enroll`, `POST /api/assistant/fields/{id}/messages` | Queue verification or an officer-written WhatsApp message. Enrollment accepts an optional language and omitting it preserves an existing preference. Manual sends accept a client request UUID for deduplication. |
+| `GET /api/admin/services` | Latest process-local endpoint and coverage checks. |
+
+See [API status](API_STATUS.md) for observed provider behavior and [scientific rules](backend/app/science/CLAUDE.md) for assumptions and source references.
+
+## Testing
+
+```sh
+cd backend
+python -m unittest discover -s tests -v
+python -m compileall -q app tests
+python -m app.service_health
+python -m app.service_health --credential-smoke --probe-model-routes
+python -m tests.live_assistant_smoke
 ```
 
-The examples use live weather for their sample coordinates.
+Set `AQUAPROOF_TEST_DATABASE_URL` to a disposable PostGIS database whose name begins with `aquaproof_test` to run the migration, row isolation, PostGIS, WhatsApp adapter and scheduler tests. The live assistant smoke command uses a dedicated QA database, synthetic farm and forecast fixtures, and the configured OpenRouter provider. It does not transmit WhatsApp messages.
 
-### Email Testing with Mailpit
-
-For the OpenRouter-assisted workflow, use the setup below. The manual email workflow continues to work with the assistant disabled.
-
-The Advisory Center queues an officer-approved email immediately or for a selected time. APScheduler sends due messages through SMTP and records delivery status. The default Compose configuration delivers locally to [Mailpit](http://localhost:8025).
-
-Record a farmer reply against a sent advisory in the UI, or submit it through `POST /api/messages/inbound`. For a mailbox that receives real replies, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, and any required SMTP credentials. Set `SMTP_STARTTLS=1` for a provider that requires STARTTLS. Set `IMAP_HOST`, `IMAP_PORT`, `IMAP_USERNAME`, and `IMAP_PASSWORD` for mailbox polling. Replies imported from IMAP are matched to a sent advisory using the email thread and farmer address.
-
-To parse replies, set `OPENAI_BASE_URL` to an OpenAI-compatible endpoint ending in `/v1` and set `OPENAI_MODEL`. Set `OPENAI_API_KEY` if the provider requires authentication. A compatible local model can handle parsing without a paid API. Complete parsed records go into field history when an officer approves them.
-
-The local API and Mailpit UI bind to loopback. This development setup has no officer authentication and is intended for local evaluation with test records.
-
-### Agricultural assistant
-
-The assistant defaults to disabled. Apply the database migrations before enabling it. Set the following values in the backend environment or in the Git-ignored Compose `.env`:
-
-| Setting | Purpose |
-| --- | --- |
-| `ASSISTANT_ENABLED=1` | Enable the assistant and officer authentication for the registry, weather, irrigation and communications APIs. |
-| `ASSISTANT_OFFICER_TOKEN` | An independently generated secret of at least 32 characters. Enter it in the dashboard's officer sign-in form. Use a TLS-protected, officer-authenticated deployment and restrict access to the API and mailbox. |
-| `ASSISTANT_REPLY_SECRET` | A different randomly generated secret of at least 32 characters. Keep it stable across workers. Rotating it invalidates existing reply credentials. |
-| `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` | A backend key and a multilingual model that supports tool calling and strict structured outputs. |
-| `OPENROUTER_APPROVED_PROVIDERS` | Comma-separated provider identifiers approved for the deployment. Routing requires zero data retention, denies data collection, and only falls back within this list. [OpenRouter routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) |
-| `SMTP_*` and `IMAP_*` | The existing delivery settings and a dedicated assistant inbox. Use SMTP STARTTLS and IMAP TLS for real mail. Mailpit can capture outgoing email locally. An IMAP mailbox is required to exercise automated replies. |
-
-Open **AI Advisory Center**, select a field, choose English, Urdu or Roman Urdu, and send mailbox verification. The farmer replies with the one-time line delivered to the registered mailbox. Future farmer messages require a fresh signed reply line tied to an email sent to that mailbox. A verified reply of `STOP` unsubscribes the farmer. Enrollment starts automatic advice for the farmer's active fields. The old unauthenticated IMAP importer and external reply parser stay off while the assistant is enabled.
-
-The persistent job queue schedules one daily evaluation per active, verified field after 07:00 Pakistan time and checks for material weather changes in three-hour windows starting at 10:00. New crop, irrigation-setting and accepted observation records also queue rechecks. Evidence includes the provider, retrieval time, optimizer results and rainfall sensitivity. Soil-water measurements used for advice require an officer-entered timestamp within 36 hours. Missing or stale measurements prompt a request for updated information. The optimizer provides gross volume and the pump runtime uses that volume divided by measured discharge, with no second efficiency adjustment. Canal advice uses the registered turn duration and day. The existing roster does not record an exact start time.
-
-The model can classify and propose an observation, but outgoing automated text comes from validated templates and numerical recommendations come from the optimizer. Officers review weather hazards, crop stress, rainfall-sensitive plans and unsupported questions. Reported observations update the record only after officer approval. A transport error before SMTP transmission can retry automatically. Unknown delivery outcomes require officer review to avoid sending a duplicate. The dashboard shows superseded advice, queued or failed work, evidence and provider-reported costs.
-
-The model receives only the verified farmer's scoped context. Parcel coordinates are used locally for weather. By default, the external model receives area and boundary metadata. Enable `ASSISTANT_SHARE_PRECISE_GEOMETRY=1` only if your approved privacy policy permits exact coordinates and suitably small polygon rings to leave the backend. The farmer reader role has no write grants. The migration account needs permission to create and grant that role.
-
----
-
-## 🔌 API Reference
-
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/health` | Service status check |
-| `POST` | `/api/farmers` | Register a new farmer |
-| `GET` | `/api/farmers` | List all registered farmers |
-| `GET` | `/api/farmers/{id}` | Retrieve farmer profile |
-| `GET` | `/api/registry` | List farmers and fields in one snapshot |
-| `POST` | `/api/registrations` | Register a farmer and field in one transaction |
-| `POST` | `/api/fields?farmer_id={id}` | Save farm boundary (GeoJSON) + attributes |
-| `GET` | `/api/fields/{id}` | Retrieve field with GeoJSON boundary |
-| `PATCH` | `/api/fields/{id}` | Update registered field |
-| `POST` | `/api/crop-seasons?field_id={id}` | Start a new crop cycle for a field |
-| `GET` | `/api/locations?q={place}` | Search for map locations by name |
-| `DELETE` | `/api/fields/{id}` | Archive the field and retain its history |
-| `GET` | `/api/weather/search?q={location}` | Hourly and daily forecast for a name or coordinates |
-| `GET` | `/api/weather/current?latitude={lat}&longitude={lon}` | Current conditions for a searched location |
-| `GET` | `/api/fields/{id}/weather` | Hourly and daily forecast with registered canal capacity |
-| `GET` | `/api/fields/{id}/weather/current` | Current conditions for the field |
-| `GET` | `/api/fields/{id}/weather/recent` | Recent weather for the field |
-| `GET` | `/api/fields/{id}/weather/history` | Daily historical archive for a date range |
-| `GET` | `/api/fields/{id}/weather/agriculture` | Hourly soil and solar outlook for the field |
-| `GET / PUT` | `/api/fields/{id}/irrigation-settings` | Read or save soil water and supply inputs |
-| `POST` | `/api/fields/{id}/simulate` | Run a field-specific irrigation scenario |
-| `GET` | `/api/crop-library` | List available PI-Advisor crop calendars |
-| `PUT` | `/api/fields/{id}/irrigation-decisions/{date}` | Save a reviewed decision against the current crop season and recalculate the baseline |
-| `POST` | `/api/fields/{id}/optimize` | Compare irrigation strategies, pumping costs, and crop stress |
-| `POST` | `/api/fields/{id}/intelligence` | Explain a calculated plan using the configured model |
-| `GET` | `/api/fields/{id}/advisories` | Retrieve advisory history for a field |
-| `POST` | `/api/advisories` | Approve and queue an advisory email |
-| `POST` | `/api/advisories/{id}/send` | Retry a failed delivery |
-| `POST` | `/api/messages/inbound` | Record a farmer reply for parsing |
-| `POST` | `/api/messages/{id}/approve` | Add a complete parsed reply to field history |
-
-Interactive documentation available at `http://localhost:8000/docs`.
-
----
-
-## 🧪 Testing & Quality Assurance
-
-### Verify connected workflows
-
-Use test records. Register a farmer and draw a field in the connected dashboard, then reload and check the saved boundary and area. Edit the polygon and confirm that the area updates. Use Crop Monitoring to start a season and check the previous crop on the farmer profile. Approve a test advisory, confirm its delivery in Mailpit, then record a reply and review the conversation.
-
-With the backend dependencies installed, run the irrigation model tests from `backend/` with `python -m unittest discover -s tests -v`.
-
-### Frontend Production Build
-
-Check source formatting and TypeScript, then build the frontend.
-
-```bash
+```sh
 cd frontend
 pnpm format:check
 pnpm typecheck
 pnpm build
 ```
 
----
+For browser tests, install Playwright in an ignored QA directory from the project root with `npm install --prefix .qa/browser --no-package-lock playwright`. Start the backend against the disposable database and Vite as described above. Set `AQUAPROOF_TEST_OFFICER_TOKEN` to the QA officer token and `AQUAPROOF_BROWSER_PERSISTENCE=1`, then run `pnpm test:browser` from `frontend`. The default browser channel is Edge. Set `AQUAPROOF_BROWSER_CHANNEL` and `AQUAPROOF_PLAYWRIGHT_DIR` for a different installed test browser or module path. Leave persistence mode off to exercise a backend with no database connection. Use only QA contacts and keep WhatsApp jobs disabled. See [test report](TEST_REPORT.md).
 
-## 📄 License
+## Deployment and release gates
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+Use HTTPS and a government identity-aware gateway that accounts for individual officers, restrict the service to approved networks, and use a secret store and managed backups. Keep the default Compose database private. Use one scheduled API worker until there is shared provider health storage and a separately deployed scheduler. Validate restores and apply migrations in a staging database first. PostgreSQL migration access must support creating the PostGIS extension, tables, policies and assistant reader role. For a separate production runtime login, grant application DML, sequence access and membership in the restricted assistant reader role. Keep the migration role separate from runtime infrastructure.
 
-The frontend ships license notices for [MapLibre GL JS](frontend/public/licenses/maplibre-gl.txt), [Terra Draw, including its MapLibre adapter](frontend/public/licenses/terra-draw.txt), and [Turf](frontend/public/licenses/turf.txt). Basemap data attribution appears on the map.
-
-The crop coefficients and stage lengths come from PI-Advisor and the soil water calculation adapts its published method. [Pinned PI-Advisor source](https://github.com/wateraccounting/PI-Advisor/tree/18197955f9ad2f74da0a73de240ff448fa67c8dd) · [MIT license notice](backend/app/science/PI-Advisor-LICENSE.txt)
-
----
-
-<p align="center">
-  <b>AquaProof Pakistan</b> • Every farm. Every drop. Every decision. 🌾
-</p>
+Regional cultivar calibration, district water allocation data, a permitted satellite credential, and a controlled WhatsApp test number remain deployment inputs. The current optimizer is a short-horizon soil-water balance. It has no validated local yield model, paddy water model, live canal telemetry, or individually attributed officer accounts. See [project memory](CLAUDE.md).

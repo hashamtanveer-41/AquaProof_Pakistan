@@ -80,12 +80,6 @@ const currentMetrics: Metric<Observation>[] = [
   ["pressure_hpa", "Pressure (hPa)"],
   ["uv_index", "UV index"],
 ];
-const agricultureMetrics: Metric<AgricultureHour>[] = [
-  ["soil_temperature_c", "Soil temperature, 0–10 cm (°C)"],
-  ["soil_moisture_surface_pct", "Soil moisture, 0–10 cm (%)"],
-  ["soil_moisture_10_40_pct", "Soil moisture, 10–40 cm (%)"],
-  ["soil_moisture_40_100_pct", "Soil moisture, 40–100 cm (%)"],
-];
 const openMeteoSoil: Metric<AgricultureHour>[] = [
   ["soil_temperature_c", "Surface soil temperature (°C)"],
   ["soil_moisture_0_1_pct", "Soil moisture, 0–1 cm (%)"],
@@ -207,10 +201,14 @@ function DailyForecast({
 }) {
   const columns: Column<DailyWeather>[] = [
     ["Date", (row) => row.date],
-    ...metricColumns(dailyMetrics),
-    ["Sunrise", (row) => (row.sunrise ? timeOfDay.format(new Date(row.sunrise)) : "Unavailable")],
-    ["Sunset", (row) => (row.sunset ? timeOfDay.format(new Date(row.sunset)) : "Unavailable")],
+    ...metricColumns(dailyMetrics.filter(([key]) => data.daily.some((row) => row[key] != null))),
   ];
+  if (!data.interval_hours) {
+    columns.push(
+      ["Sunrise", (row) => (row.sunrise ? timeOfDay.format(new Date(row.sunrise)) : "Unavailable")],
+      ["Sunset", (row) => (row.sunset ? timeOfDay.format(new Date(row.sunset)) : "Unavailable")],
+    );
+  }
   if (showCanal)
     columns.splice(6, 0, [
       "Canal turn (m³)",
@@ -218,9 +216,16 @@ function DailyForecast({
     ]);
   return (
     <Card
-      title="Daily forecast"
+      title={data.interval_hours === 3 ? "Forecast by date" : "Daily forecast"}
       subtitle={`${name} · ${data.latitude.toFixed(4)}°, ${data.longitude.toFixed(4)}° · ${data.daily.length} days (${data.timezone})`}
     >
+      {data.interval_hours === 3 && (
+        <p>
+          OpenWeather groups the available three-hour periods by their end time in Pakistan. The
+          first and last dates may be partial. Irrigation uses Open-Meteo daily rainfall and
+          reference ET.
+        </p>
+      )}
       <WeatherTable
         rows={data.daily}
         columns={columns}
@@ -388,10 +393,7 @@ function FieldAgriculture({ path }: { path: string }) {
           {(data) => (
             <Hours
               rows={data.hourly}
-              metrics={[
-                ...(data.soil_profile === "open-meteo" ? openMeteoSoil : agricultureMetrics),
-                ...solarMetrics,
-              ]}
+              metrics={[...openMeteoSoil, ...solarMetrics]}
               label="Soil and solar outlook"
             />
           )}
@@ -486,8 +488,17 @@ export default function Weather({
                 name={search ? data.location_name || search : field?.name || ""}
                 showCanal={!search}
               />
-              <Card title="Hourly forecast" subtitle="Pakistan Standard Time">
-                <Hours rows={data.hourly} metrics={hourlyMetrics} label="Hourly forecast" />
+              <Card
+                title={data.interval_hours === 3 ? "Three-hour forecast" : "Hourly forecast"}
+                subtitle="Pakistan Standard Time"
+              >
+                <Hours
+                  rows={data.hourly}
+                  metrics={hourlyMetrics.filter(([key]) =>
+                    data.hourly.some((row) => row[key] != null),
+                  )}
+                  label={data.interval_hours === 3 ? "Three-hour forecast" : "Hourly forecast"}
+                />
               </Card>
               {data.minutely && data.minutely.length > 0 && (
                 <Card title="Minute-by-minute forecast" subtitle="Pakistan Standard Time">

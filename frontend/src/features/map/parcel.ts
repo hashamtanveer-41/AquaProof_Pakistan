@@ -19,6 +19,18 @@ export function irrigationStyle(field: Field) {
   return irrigationStyles[field.irrigation_status ?? "setup_required"];
 }
 
+export const cropStageStyles = [
+  { label: "Initial", color: "#42863c" },
+  { label: "Development", color: "#0f766e" },
+  { label: "Mid-season", color: "#155b96" },
+  { label: "Late season", color: "#a16207" },
+  { label: "Outside modeled season / unavailable", color: "#6b7280" },
+];
+
+export function cropStageColor(stage: string) {
+  return cropStageStyles.find(({ label }) => label === stage)?.color ?? cropStageStyles[4].color;
+}
+
 export function previewArea(points: Point[]) {
   if (points.length < 3 || points.length > 5000 || !points.every(validMapPoint)) return 0;
   return area(polygon(points)) / ACRE_M2;

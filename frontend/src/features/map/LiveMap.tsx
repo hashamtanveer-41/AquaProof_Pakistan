@@ -14,6 +14,8 @@ import {
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import {
   TerraDraw,
+  TerraDrawModeUndoRedo,
+  TerraDrawSessionUndoRedo,
   TerraDrawPolygonMode,
   TerraDrawSelectMode,
   ValidateNotSelfIntersecting,
@@ -23,8 +25,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Button } from "@/components/ui";
 import type { Field, Point } from "@/domain/data";
 import { polygon } from "@/domain/registry";
-import { irrigationStyle } from "./parcel";
-import { hybridLayer, satelliteSource, type Basemap } from "./basemap";
+import { cropStageColor, irrigationStyle } from "./parcel";
+import { arcgisRequest, arcgisStyle, type Basemap } from "./basemap";
 
 const PAKISTAN: [Point, Point] = [
   [60.8, 23.5],
@@ -49,7 +51,7 @@ const rasterStyle: StyleSpecification = {
 };
 const plots = "aquaproof-parcels";
 const edges = "aquaproof-parcel-edges";
-const imagery = "aquaproof-satellite";
+const weatherLayer = "aquaproof-weather";
 setWorkerUrl(workerUrl);
 
 export type LiveMapProps = {
@@ -65,7 +67,10 @@ export type LiveMapProps = {
   clearDraft?: number;
   resetView?: number;
   basemap?: Basemap;
-  onImageryError?: () => void;
+  arcgisToken?: string | null;
+  arcgisServer?: boolean;
+  colorMode?: "irrigation" | "crop";
+  weatherPoint?: { point: Point; temperature_c: number };
 };
 
 function parcelFeature(field: Field) {
@@ -73,7 +78,11 @@ function parcelFeature(field: Field) {
     type: "Feature" as const,
     id: field.id,
     geometry: polygon(field.points),
-    properties: { id: field.id, color: irrigationStyle(field).color },
+    properties: {
+      id: field.id,
+      color: irrigationStyle(field).color,
+      stageColor: cropStageColor(field.stage),
+    },
   };
 }
 
@@ -91,12 +100,16 @@ function parcelChanges(before: Field[], after: Field[]) {
     if (!previous) add.push(parcelFeature(field));
     else if (
       previous.points !== field.points ||
-      previous.irrigation_status !== field.irrigation_status
+      previous.irrigation_status !== field.irrigation_status ||
+      previous.stage !== field.stage
     ) {
       update.push({
         id: field.id,
         newGeometry: polygon(field.points),
-        addOrUpdateProperties: [{ key: "color", value: irrigationStyle(field).color }],
+        addOrUpdateProperties: [
+          { key: "color", value: irrigationStyle(field).color },
+          { key: "stageColor", value: cropStageColor(field.stage) },
+        ],
       });
     }
   }
@@ -116,7 +129,10 @@ export default function LiveMap({
   clearDraft = 0,
   resetView = 0,
   basemap = "street",
-  onImageryError,
+  arcgisToken,
+  arcgisServer,
+  colorMode = "irrigation",
+  weatherPoint,
 }: LiveMapProps) {
   const drawing = draft !== undefined;
   const container = useRef<HTMLDivElement>(null);
@@ -128,19 +144,23 @@ export default function LiveMap({
     onPreview,
     draft,
     drawing,
-    onImageryError,
   });
   const [map, setMap] = useState<Map>();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const [loadingTiles, setLoadingTiles] = useState(false);
   const [activeStyle, setActiveStyle] = useState(0);
-  const [hybridAvailable, setHybridAvailable] = useState(false);
   const clearDrawing = useRef<(() => void) | null>(null);
-  const baseLayers = useRef<ReturnType<Map["getStyle"]>["layers"]>([]);
   const sourceFields = useRef<Field[]>([]);
-  const imageryLoaded = useRef(false);
+  const arcgis = useRef(false);
+  const requestedStyle = useRef<string | undefined>(undefined);
+  const token = useRef(arcgisToken);
+  const stopDrawing = useRef<(() => void) | null>(null);
+  const redoUndo = useRef<((action: "undo" | "redo") => void) | null>(null);
+  const [history, setHistory] = useState({ undo: false, redo: false });
+  const styleTimer = useRef<number>(undefined);
+  const [arcgisFailed, setArcgisFailed] = useState(false);
+  const arcgisAvailable = Boolean(arcgisToken || arcgisServer);
 
   useEffect(() => {
     refs.current = {
@@ -151,9 +171,8 @@ export default function LiveMap({
       onPreview,
       draft,
       drawing,
-      onImageryError,
     };
-  }, [fields, selected, onSelect, onDraftChange, onPreview, draft, drawing, onImageryError]);
+  }, [fields, selected, onSelect, onDraftChange, onPreview, draft, drawing]);
 
   useEffect(() => {
     onReady?.(ready);
@@ -161,6 +180,8 @@ export default function LiveMap({
 
   useEffect(() => {
     if (!container.current) return;
+    requestedStyle.current = undefined;
+    arcgis.current = false;
     let instance: Map;
     let usingRaster = Boolean(import.meta.env.VITE_MAP_TILES);
     try {
@@ -170,6 +191,7 @@ export default function LiveMap({
         fitBoundsOptions: { padding: 22 },
         renderWorldCopies: false,
         style: usingRaster ? rasterStyle : libertyStyle,
+        transformRequest: (url) => arcgisRequest(url, token.current),
         attributionControl: false,
         maxTileCacheSize: 192,
         maxTileCacheZoomLevels: 3,
@@ -183,15 +205,15 @@ export default function LiveMap({
     instance.addControl(new ScaleControl({ unit: "metric" }));
     instance.addControl(new AttributionControl({ compact: false }));
     const useStreetTiles = () => {
-      if (usingRaster || instance.getSource(plots)) return;
+      if (usingRaster || arcgis.current || instance.getSource(plots)) return;
       usingRaster = true;
       instance.setStyle(rasterStyle, { diff: false });
     };
     const styleTimeout = window.setTimeout(useStreetTiles, 8000);
-    instance.on("error", (event) => {
-      if ("sourceId" in event && event.sourceId === imagery) {
-        setLoadingTiles(false);
-        refs.current.onImageryError?.();
+    instance.on("error", () => {
+      if (arcgis.current) {
+        setError("ArcGIS map resources are unavailable. The open street basemap is active.");
+        setArcgisFailed(true);
         return;
       }
       if (!usingRaster && !instance.getSource(plots)) {
@@ -202,9 +224,7 @@ export default function LiveMap({
     });
     instance.on("style.load", () => {
       window.clearTimeout(styleTimeout);
-      imageryLoaded.current = false;
-      baseLayers.current = instance.getStyle().layers;
-      setHybridAvailable(baseLayers.current.some(hybridLayer));
+      window.clearTimeout(styleTimer.current);
       sourceFields.current = refs.current.fields;
       instance.addSource(plots, {
         type: "geojson",
@@ -239,11 +259,6 @@ export default function LiveMap({
       setActiveStyle((current) => current + 1);
       setReady(true);
     });
-    instance.on("sourcedata", (event) => {
-      if (event.sourceId === imagery && event.coord && event.sourceDataType === "content") {
-        imageryLoaded.current = true;
-      }
-    });
     instance.on("click", (event) => {
       if (refs.current.drawing || !instance.getLayer(plots)) return;
       const id = instance.queryRenderedFeatures(event.point, { layers: [plots] })[0]?.properties.id;
@@ -253,6 +268,7 @@ export default function LiveMap({
     observer.observe(container.current);
     return () => {
       window.clearTimeout(styleTimeout);
+      window.clearTimeout(styleTimer.current);
       observer.disconnect();
       setReady(false);
       setMap(undefined);
@@ -261,8 +277,38 @@ export default function LiveMap({
   }, []);
 
   useEffect(() => {
+    token.current = arcgisToken;
+    if (!map || (!arcgisAvailable && !arcgis.current)) return;
+    if (arcgisAvailable && drawing && !draft?.length) return;
+    const useEsri = arcgisAvailable && !arcgisFailed;
+    const identity = useEsri ? `${arcgisToken ? "direct" : "server"}:${basemap}` : "open";
+    if (requestedStyle.current === identity) return;
+    window.clearTimeout(styleTimer.current);
+    requestedStyle.current = identity;
+    stopDrawing.current?.();
+    setReady(false);
+    arcgis.current = useEsri;
+    const style = useEsri
+      ? arcgisToken
+        ? arcgisStyle(basemap)
+        : `/api/map/basemap-style/${basemap}`
+      : rasterStyle;
+    map.setStyle(style, { diff: false });
+    if (useEsri) {
+      styleTimer.current = window.setTimeout(() => {
+        setError("ArcGIS map loading timed out. The open street basemap is active.");
+        setArcgisFailed(true);
+      }, 12_000);
+    }
+  }, [map, arcgisAvailable, arcgisToken, basemap, arcgisFailed, drawing, Boolean(draft?.length)]);
+
+  useEffect(() => {
     if (!map || !attempt) return;
     setError("");
+    if (arcgisFailed && arcgisAvailable) {
+      setArcgisFailed(false);
+      return;
+    }
     const raster = map.getSource<RasterTileSource>("streets");
     if (raster) raster.setTiles([streetTiles]);
     else {
@@ -289,45 +335,74 @@ export default function LiveMap({
   }, [map, fields, activeStyle]);
 
   useEffect(() => {
-    if (!map?.getSource(plots) || !selected) return;
-    const feature = { source: plots, id: selected };
-    map.setFeatureState(feature, { selected: true, hidden: drawing });
-    return () => {
-      if (map.getSource(plots)) map.removeFeatureState(feature);
-    };
-  }, [map, selected, drawing, activeStyle, fields]);
+    if (!map?.getLayer(plots) || !map.getLayer(edges)) return;
+    const property = colorMode === "crop" ? "stageColor" : "color";
+    map.setPaintProperty(plots, "fill-color", ["get", property]);
+    map.setPaintProperty(edges, "line-color", ["get", property]);
+  }, [map, colorMode, activeStyle]);
 
   useEffect(() => {
-    if (!map?.getSource(plots)) return;
-    if (basemap !== "street" && satelliteSource && !map.getSource(imagery)) {
-      map.addSource(imagery, satelliteSource);
-      map.addLayer(
-        { id: imagery, type: "raster", source: imagery },
-        baseLayers.current[0]?.id ?? plots,
-      );
-    }
-    if (!map.getLayer(imagery)) return;
-    const street = basemap === "street";
-    const addLabels = basemap === "hybrid" && hybridAvailable;
-    map.setLayoutProperty(imagery, "visibility", street ? "none" : "visible");
-    for (const layer of baseLayers.current) {
-      const visibility =
-        street || (addLabels && hybridLayer(layer)) ? layer.layout?.visibility : "none";
-      map.setLayoutProperty(layer.id, "visibility", visibility ?? "visible");
-    }
-    setLoadingTiles(!street);
-    if (street) return;
-    const endLoading = () => {
-      setLoadingTiles(false);
-      if (!imageryLoaded.current) refs.current.onImageryError?.();
+    if (!map?.getLayer(plots)) return;
+    const data = {
+      type: "FeatureCollection" as const,
+      features: weatherPoint
+        ? [
+            {
+              type: "Feature" as const,
+              geometry: { type: "Point" as const, coordinates: weatherPoint.point },
+              properties: { temperature: weatherPoint.temperature_c },
+            },
+          ]
+        : [],
     };
-    map.once("idle", endLoading);
-    const timeout = window.setTimeout(endLoading, 12_000);
+    const source = map.getSource<GeoJSONSource>(weatherLayer);
+    if (source) {
+      void source.setData(data);
+      return;
+    }
+    map.addSource(weatherLayer, { type: "geojson", data });
+    map.addLayer({
+      id: weatherLayer,
+      type: "circle",
+      source: weatherLayer,
+      paint: {
+        "circle-radius": 9,
+        "circle-stroke-color": "#fff",
+        "circle-stroke-width": 2,
+        "circle-color": [
+          "interpolate",
+          ["linear"],
+          ["get", "temperature"],
+          0,
+          "#1d4ed8",
+          25,
+          "#0e7490",
+          40,
+          "#c2410c",
+        ],
+      },
+    });
+  }, [map, weatherPoint, activeStyle]);
+
+  useEffect(() => {
+    const source = map?.getSource(plots);
+    if (!map || !source || !selected) return;
+    const feature = { source: plots, id: selected };
+    let applied = false;
+    const apply = () => {
+      if (applied || map.getSource(plots) !== source || !map.isSourceLoaded(plots)) return;
+      map.setFeatureState(feature, { selected: true, hidden: drawing });
+      applied = true;
+    };
+    const subscription = map.on("sourcedata", (event) => {
+      if (event.sourceId === plots) apply();
+    });
+    apply();
     return () => {
-      map.off("idle", endLoading);
-      window.clearTimeout(timeout);
+      subscription.unsubscribe();
+      if (applied && map.getSource(plots) === source) map.removeFeatureState(feature);
     };
-  }, [map, basemap, activeStyle, hybridAvailable]);
+  }, [map, selected, drawing, activeStyle, fields]);
 
   const selectedPoints = fields.find((field) => field.id === selected)?.points;
   useEffect(() => {
@@ -346,9 +421,13 @@ export default function LiveMap({
   }, [map, resetView]);
 
   useEffect(() => {
-    if (!map || !ready || !drawing) return;
+    if (!map || !ready || !drawing || !map.getSource(plots)) return;
     const draw = new TerraDraw({
       adapter: new TerraDrawMapLibreGLAdapter({ map, coordinatePrecision: 8 }),
+      undoRedo: {
+        modeLevel: new TerraDrawModeUndoRedo(),
+        sessionLevel: new TerraDrawSessionUndoRedo(),
+      },
       modes: [
         new TerraDrawPolygonMode({ validation: ValidateNotSelfIntersecting }),
         new TerraDrawSelectMode({
@@ -366,10 +445,8 @@ export default function LiveMap({
     });
     let featureId: string | number | undefined;
     const emit = () => {
-      const shape =
-        featureId === undefined
-          ? draw.getSnapshot().find((item) => item.geometry.type === "Polygon")
-          : draw.getSnapshotFeature(featureId);
+      const shape = draw.getSnapshot().find((item) => item.geometry.type === "Polygon");
+      if (shape && draw.getMode() === "select") featureId = shape.id;
       if (shape?.geometry.type === "Polygon") {
         const ring = shape.geometry.coordinates[0];
         const points = (
@@ -404,7 +481,7 @@ export default function LiveMap({
         draw.selectFeature(featureId);
       } else {
         featureId = undefined;
-        refs.current.onDraftChange?.([]);
+        setError("The saved boundary could not be opened for editing.");
       }
     }
     draw.on("finish", (id) => {
@@ -415,6 +492,9 @@ export default function LiveMap({
       emit();
     });
     draw.on("change", emit);
+    const syncHistory = () => setHistory({ undo: draw.canUndo(), redo: draw.canRedo() });
+    draw.on("history", syncHistory);
+    syncHistory();
     clearDrawing.current = () => {
       featureId = undefined;
       draw.clear();
@@ -422,12 +502,37 @@ export default function LiveMap({
       refs.current.onPreview?.([]);
       refs.current.onDraftChange?.([]);
     };
-    return () => {
+    redoUndo.current = (action) => {
+      if (action === "redo") draw.redo();
+      else draw.undo();
+      emit();
+      syncHistory();
+    };
+    const shortcuts = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !["z", "y"].includes(event.key.toLowerCase()))
+        return;
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("input, textarea, select, [contenteditable]")
+      )
+        return;
+      event.preventDefault();
+      redoUndo.current?.(event.shiftKey || event.key.toLowerCase() === "y" ? "redo" : "undo");
+    };
+    window.addEventListener("keydown", shortcuts);
+    const stop = () => {
+      if (stopDrawing.current !== stop) return;
+      stopDrawing.current = null;
       clearDrawing.current = null;
+      redoUndo.current = null;
+      window.removeEventListener("keydown", shortcuts);
       draw.off("change", emit);
+      draw.off("history", syncHistory);
       if (map.getStyle()) draw.stop();
     };
-  }, [map, ready, drawing]);
+    stopDrawing.current = stop;
+    return stop;
+  }, [map, ready, drawing, activeStyle]);
 
   useEffect(() => {
     if (clearDraft) clearDrawing.current?.();
@@ -436,16 +541,24 @@ export default function LiveMap({
   return (
     <div className="geo-canvas live-map" role="region" aria-label="Live farm map">
       <div ref={container} className="live-map-canvas" />
-      {(error || !ready || loadingTiles || (basemap === "hybrid" && !hybridAvailable)) && (
+      {ready && drawing && (
+        <div className="boundary-history-controls">
+          <Button disabled={!history.undo} onClick={() => redoUndo.current?.("undo")}>
+            Undo
+          </Button>
+          <Button disabled={!history.redo} onClick={() => redoUndo.current?.("redo")}>
+            Redo
+          </Button>
+        </div>
+      )}
+      {arcgisAvailable && !arcgisFailed && ready && (
+        <a className="esri-credit" href="https://www.esri.com/" target="_blank" rel="noreferrer">
+          Powered by Esri
+        </a>
+      )}
+      {(error || !ready) && (
         <div className="live-map-status" role={error ? "alert" : "status"}>
-          <span>
-            {error ||
-              (!ready
-                ? "Loading map…"
-                : loadingTiles
-                  ? "Loading imagery…"
-                  : "Street labels are unavailable.")}
-          </span>
+          <span>{error || "Loading map…"}</span>
           {error && map && !drawing && (
             <Button onClick={() => setAttempt((count) => count + 1)}>Retry basemap</Button>
           )}

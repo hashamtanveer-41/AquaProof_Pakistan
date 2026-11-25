@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-import httpx
+from ..service_http import request_json
 
 OPEN_METEO = "Open-Meteo"
 NASA_POWER = "NASA POWER"
@@ -25,6 +25,7 @@ HOURLY = {
     "wind_gusts_10m": "gust_kmh",
     "wind_direction_10m": "wind_direction_deg",
     "uv_index": "uv_index",
+    "shortwave_radiation": "solar_w_m2",
 }
 DAILY = {
     "temperature_2m_min": "min_c",
@@ -59,15 +60,15 @@ ARCHIVE = {
 
 
 def fetch(url, params):
-    response = httpx.get(url, params=params, headers=REQUEST_HEADERS, timeout=10)
-    response.raise_for_status()
-    return response.json()
+    return request_json("GET", url, params=params, headers=REQUEST_HEADERS)[0]
 
 
 def open_meteo(lat, lon, *, timezone=TIMEZONE, **params):
+    key = os.getenv("OPEN_METEO_API_KEY", "").strip()
     return fetch(os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast"), {
         "latitude": lat, "longitude": lon, "timezone": timezone, "wind_speed_unit": "kmh",
         "temperature_unit": "celsius", "precipitation_unit": "mm", **params,
+        **({"apikey": key} if key else {}),
     })
 
 

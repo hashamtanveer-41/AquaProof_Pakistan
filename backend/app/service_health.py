@@ -1,0 +1,268 @@
+"""Credential and capability probes using public locations and no outbound messages."""
+
+import json
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
+from functools import partial
+from threading import Lock
+from time import monotonic
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, HTTPException
+
+from . import arcgis, assistant_model, green_api
+from .science import openweather, weather
+from .science import weather_backup as backup
+from .service_http import ProviderError, request_json
+
+router = APIRouter(prefix="/api/admin", tags=["service health"])
+POINTS = {
+    "Punjab / Multan": (30.1575, 71.5249),
+    "Sindh / Hyderabad": (25.396, 68.3578),
+    "Khyber Pakhtunkhwa / Mardan": (34.198, 72.045),
+    "Balochistan / Quetta": (30.1798, 66.975),
+}
+_snapshot = {}
+_lock = Lock()
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def required(*names):
+    missing = [name for name in names if not os.getenv(name, "").strip()]
+    if missing:
+        raise ProviderError("Missing " + ", ".join(missing))
+
+
+def checked(result, condition, message):
+    if not condition(result):
+        raise ProviderError(message)
+    return result
+
+
+def coverage(loader, predicate):
+    samples = {}
+    for district, point in POINTS.items():
+        try:
+            samples[district] = {"ok": bool(predicate(loader(*point))), "http_status": 200}
+        except HTTPException as error:
+            status = (error.headers or {}).get("X-Upstream-Status")
+            samples[district] = {"ok": False, "detail": str(error.detail),
+                                 "http_status": int(status) if status else None}
+        except ProviderError as error:
+            samples[district] = {"ok": False, "detail": str(error), "http_status": error.status}
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError) as error:
+            samples[district] = {"ok": False, "detail": "Invalid response (" + type(error).__name__ + ")"}
+    return {"coverage": samples}
+
+
+def arcgis_style(path, token=None):
+    # The interactive smoke test can inspect styles with a server credential;
+    # production browsers must use a separate public, referrer-restricted token.
+    token = token or arcgis.map_config()["browser_token"] or arcgis.server_key()
+    if not token:
+        raise ProviderError("Missing a separate ARCGIS_BROWSER_TOKEN or enabled server basemaps")
+    data, response = request_json("GET", f"{arcgis.STYLES}/{path}",
+                                  params={"token": token})
+    if data.get("version") != 8 or not isinstance(data.get("sources"), dict) or not data.get("layers"):
+        code = data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else None
+        raise ProviderError("ArcGIS style schema invalid" if not code else f"ArcGIS application error {code}",
+                            code if type(code) is int else response.status_code)
+    # Record hostnames only. Styles and TileJSON may include token-bearing URLs.
+    sources = [source for source in data["sources"].values() if isinstance(source, dict)]
+    resources = [data.get("glyphs"), data.get("sprite"),
+                 *(source.get("url") for source in sources),
+                 *(tile for source in sources for tile in source.get("tiles", []) if isinstance(tile, str))]
+    return {**http_metadata(response), "asset_hosts": sorted({
+        urlsplit(url).hostname for url in resources if isinstance(url, str) and urlsplit(url).hostname
+    })}
+
+
+def http_metadata(response):
+    headers = response.headers
+    quotas = {name: headers[name] for name in (
+        "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+    ) if name in headers and len(headers[name]) < 48 and headers[name].isascii()
+        and all(character.isdigit() or character in " .-" for character in headers[name])}
+    return {"http_status": response.status_code, "rate_limit": quotas}
+
+
+def openrouter():
+    required("OPENROUTER_API_KEY")
+    key = os.environ["OPENROUTER_API_KEY"]
+    data, response = request_json("GET", "https://openrouter.ai/api/v1/key",
+                                  headers={"Authorization": f"Bearer {key}"})
+    account = checked(data.get("data"), lambda row: isinstance(row, dict), "OpenRouter key schema invalid")
+    return {**http_metadata(response), "quota_remaining_usd": weather.number(account.get("limit_remaining")),
+            "usage_usd": weather.number(account.get("usage"))}
+
+
+def openrouter_completion():
+    settings = assistant_model.config()
+    if not settings:
+        raise ProviderError("Missing OPENROUTER_API_KEY or approved OpenRouter providers")
+    model = settings[1]
+    usage = []
+    message = assistant_model.request_model(None, [{"role": "user", "content": "Return the JSON object with ok set to true."}],
+        usage, response_format={"type": "json_schema", "json_schema": {
+            "name": "health", "strict": True, "schema": {"type": "object", "properties": {
+                "ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False},
+        }})
+    if message.get("content") is None or json.loads(message["content"]) != {"ok": True}:
+        raise ProviderError("OpenRouter structured output did not match the probe")
+    tool = assistant_model.request_model(None, [
+        {"role": "user", "content": "Call the health_check function with no arguments."},
+    ], usage, tools=[{"type": "function", "function": {
+        "name": "health_check", "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    }}], tool_choice={"type": "function", "function": {"name": "health_check"}})
+    calls = tool.get("tool_calls")
+    if not isinstance(calls, list) or len(calls) != 1 or calls[0].get("function", {}).get("name") != "health_check":
+        raise ProviderError("OpenRouter did not return the specified function call")
+    return {"http_status": 200, "model": model, "structured_output": True, "function_call": True}
+
+
+def whatsapp():
+    required("GREEN_API_ID_INSTANCE", "GREEN_API_TOKEN_INSTANCE")
+    service = green_api.settings()
+    if not service:
+        raise ProviderError("Missing valid Green API credentials or approved HTTPS instance URL")
+    state, status = service.state()
+    if state != "authorized":
+        return {"ok": False, "http_status": status, "detail": f"WhatsApp instance state: {state}"}
+    if issue := service.polling_issue():
+        return {"ok": False, "http_status": status, "detail": issue}
+    return {"http_status": status, "detail": "Authorized with incoming notifications enabled. No messages sent."}
+
+
+def raster(url):
+    from httpx import get
+
+    response = get(url, timeout=7, headers={"User-Agent": "AquaProof-Health/1.0"})
+    if not response.is_success or not response.headers.get("content-type", "").startswith("image/"):
+        raise ProviderError("Expected a raster tile image", response.status_code)
+    return http_metadata(response)
+
+
+def services():
+    lat, lon = POINTS["Punjab / Multan"]
+    previous = date.today() - timedelta(days=60)
+    def openweather_check(loader, predicate):
+        required("OPENWEATHER_API_KEY")
+        return coverage(loader, predicate)
+
+    def geocoding(path):
+        required("ARCGIS_API_KEY")
+        if path == "findAddressCandidates":
+            cities = {point: site.split(" / ")[1] for site, point in POINTS.items()}
+            return coverage(lambda y, x: arcgis.candidates(cities[(y, x)]), bool)
+        if path == "suggest":
+            return {"ok": bool(arcgis.suggest("Mult")), "http_status": 200}
+        return {"ok": bool(arcgis.reverse(lat, lon).get("name")), "http_status": 200}
+
+    yield "OpenWeather", f"{openweather.BASE_URL}/forecast", lambda: openweather_check(
+        openweather.forecast, weather.fresh_openweather_forecast)
+    yield "OpenWeather", f"{openweather.BASE_URL}/weather", lambda: openweather_check(
+        openweather.current, weather.fresh_current)
+    yield "Open-Meteo", os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast"), lambda: (
+        coverage(backup.forecast, weather.fresh_forecast))
+    meteo_url = os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast")
+    yield "Open-Meteo current", meteo_url, lambda: coverage(backup.current, weather.fresh_current)
+    yield "Open-Meteo soil and solar", meteo_url, lambda: coverage(backup.agriculture, lambda data: any(
+        row.get("solar_w_m2") is not None and row.get("soil_moisture_0_1_pct") is not None
+        for row in data["hourly"]))
+    yield "Open-Meteo place search", os.getenv("OPEN_METEO_GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"), lambda: (
+        {"ok": any(item["country_code"] == "PK" for item in weather.geocode("Multan", country="PK"))})
+    yield "NASA POWER", os.getenv("NASA_POWER_URL", "https://power.larc.nasa.gov/api/temporal/daily/point"), lambda: (
+        {"ok": any(row.get("precipitation_mm") is not None for row in backup.history(lat, lon, previous, previous)["daily"])})
+    for path in ("findAddressCandidates", "suggest", "reverseGeocode"):
+        yield "ArcGIS geocoding", f"{arcgis.GEOCODE}/{path}", lambda path=path: geocoding(path)
+    for path in arcgis.STYLE_NAMES.values():
+        yield "ArcGIS basemap styles", f"{arcgis.STYLES}/{path}", lambda path=path: arcgis_style(path)
+    yield "OpenRouter", "https://openrouter.ai/api/v1/key", openrouter
+    yield "OpenRouter", assistant_model.ENDPOINT, openrouter_completion
+    yield "Green API WhatsApp", "getStateInstance / getSettings", whatsapp
+    yield "OpenFreeMap", "https://tiles.openfreemap.org/styles/liberty", lambda: (
+        {"ok": request_json("GET", "https://tiles.openfreemap.org/styles/liberty")[0].get("version") == 8})
+    yield "OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png", lambda: (
+        raster("https://tile.openstreetmap.org/5/22/13.png"))
+
+
+def probe(item):
+    provider, endpoint, check = item
+    parsed = urlsplit(endpoint)
+    endpoint = f"{parsed.scheme}://{parsed.hostname}{parsed.path}" if parsed.hostname else endpoint
+    start = monotonic()
+    result = {"provider": provider, "endpoint": endpoint}
+    try:
+        details = check()
+        samples = details.get("coverage", {}).values()
+        passed = [sample["ok"] for sample in samples]
+        auth_error = {401, 402, 403, 498, 499}
+        if passed and not any(passed):
+            state = "misconfigured" if all(sample.get("http_status") in auth_error for sample in samples) else "unavailable"
+        elif not details.get("ok", True) or (passed and not all(passed)):
+            state = "degraded"
+        else:
+            state = "operational"
+        result.update(details, status=state)
+        if state != "operational" and "detail" not in result:
+            result["detail"] = "Required fields, fresh data, or Pakistan sample coverage missing"
+    except (ProviderError, assistant_model.ModelUnavailable, HTTPException) as error:
+        status = getattr(error, "status", None) or getattr(error, "status_code", None)
+        if isinstance(error, HTTPException) and (upstream := (error.headers or {}).get("X-Upstream-Status")):
+            status = int(upstream)
+        reason = str(error.detail) if isinstance(error, HTTPException) else str(error)
+        result.update(status="misconfigured" if reason.startswith("Missing ") or status in (401, 403, 498, 499)
+                      else "unavailable", detail=reason, http_status=status)
+    except Exception as error:  # noqa: BLE001 - one failed provider must not cancel the snapshot
+        result.update(status="unavailable", detail=type(error).__name__)
+    return {**result, "checked_at": datetime.now(UTC).isoformat(), "latency_ms": round((monotonic() - start) * 1000)}
+
+
+def run_checks():
+    with ThreadPoolExecutor(max_workers=5) as workers:
+        results = list(workers.map(probe, services()))
+    with _lock:
+        _snapshot["services"] = results
+    return results
+
+
+@router.get("/services")
+def service_status():
+    with _lock:
+        return {"enabled": os.getenv("AQUAPROOF_HEALTH_ENABLED", "1") == "1",
+                "services": _snapshot.get("services", [])}
+
+
+if __name__ == "__main__":
+    import argparse
+    from getpass import getpass
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--credential-smoke", action="store_true")
+    parser.add_argument("--probe-model-routes", action="store_true",
+                        help="Also test alternate providers using only synthetic requests.")
+    args = parser.parse_args()
+    if args.credential_smoke:
+        os.environ["ARCGIS_API_KEY"] = getpass("ArcGIS key (hidden): ").strip()
+        os.environ["OPENROUTER_API_KEY"] = getpass("OpenRouter key (hidden): ").strip()
+        os.environ.setdefault("OPENROUTER_APPROVED_PROVIDERS", "OpenAI")
+        selected = []
+        for provider, endpoint, check in services():
+            if provider == "ArcGIS basemap styles":
+                path = endpoint.removeprefix(arcgis.STYLES + "/")
+                check = partial(arcgis_style, path, os.environ["ARCGIS_API_KEY"])
+            if provider in ("ArcGIS basemap styles", "ArcGIS geocoding", "OpenRouter"):
+                selected.append((provider, endpoint, check))
+        print(json.dumps([probe(item) for item in selected], indent=2))
+        if args.probe_model_routes:
+            for model, provider in (("openai/gpt-4o", "Azure"), ("openai/gpt-4.1", "OpenAI"),
+                                    ("openai/gpt-4.1", "Azure")):
+                os.environ["OPENROUTER_MODEL"] = model
+                os.environ["OPENROUTER_APPROVED_PROVIDERS"] = provider
+                print(json.dumps({"model": model, "route": provider, **probe(
+                    ("OpenRouter", assistant_model.ENDPOINT, openrouter_completion)
+                )}))
+    else:
+        print(json.dumps(run_checks(), indent=2))

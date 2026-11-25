@@ -1,130 +1,93 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from unittest import TestCase
 from unittest.mock import patch
 
 import httpx
 from fastapi import HTTPException
 
-from app.science import weather
+from app.science import openweather, weather
+from app.service_http import ProviderError
 
 
-class TomorrowWeatherTest(TestCase):
-    def test_forecast_accepts_variable_horizon_and_converts_units(self):
+class WeatherTest(TestCase):
+    def setUp(self):
+        cache = patch.object(weather, "_cache", weather.OrderedDict())
+        cache.start()
+        self.addCleanup(cache.stop)
+
+    def test_openweather_normalizes_three_hour_periods_and_partials(self):
+        instant = datetime(2026, 11, 24, 18, tzinfo=UTC)
         first = {
-            "time": "2026-11-23T23:00:00Z",
-            "values": {
-                "temperatureMin": 13,
-                "rainAccumulationSum": 0,
-                "evapotranspirationSum": 2.5,
-                "windSpeedMax": 5,
-                "windGustMax": 8,
-            },
+            "dt": int(instant.timestamp()), "main": {"temp": 17, "humidity": 45},
+            "wind": {"speed": 4, "gust": 5}, "rain": {"3h": 3}, "pop": .55, "visibility": 9000,
         }
-        result = weather.forecast_payload({
-            "location": {"lat": 31.52, "lon": 74.36},
-            "timelines": {
-                "daily": [first, {**first, "time": "2026-11-24T23:00:00Z", "values": {}}],
-                "hourly": [{"time": "2026-11-24T03:00:00Z", "values": {"windSpeed": 2}}],
-            },
-        })
+        second = {"dt": first["dt"] + 10800, "main": {"temp": 21}}
+        result = openweather.forecast_payload({"list": [first, second]}, 31.52, 74.36, "Lahore")
+        self.assertEqual(result["interval_hours"], 3)
         self.assertEqual([row["date"] for row in result["daily"]], ["2026-11-24", "2026-11-25"])
-        self.assertEqual(result["daily"][0]["rain_mm"], 0)
-        self.assertEqual(result["daily"][0]["eto_mm"], 2.5)
-        self.assertEqual(result["daily"][0]["wind_kmh"], 18)
-        self.assertEqual(result["daily"][0]["gust_kmh"], 28.8)
-        self.assertIsNone(result["daily"][1]["rain_mm"])
-        self.assertEqual(result["hourly"][0]["wind_kmh"], 7.2)
+        single = result["hourly"][0]
+        self.assertEqual(single["rain_rate_mmh"], 1)
+        self.assertEqual(single["precip_probability_pct"], 55)
+        self.assertEqual(single["wind_kmh"], 14.4)
+        self.assertEqual(single["visibility_km"], 9)
+        self.assertEqual(result["daily"][1]["rain_mm"], 0)
+        self.assertIsNone(result["daily"][0]["eto_mm"])
 
-    def test_provider_key_stays_in_header_and_rate_limit_is_sanitized(self):
+    def test_openweather_key_is_only_passed_to_provider_and_errors_are_safe(self):
         with (
-            patch.dict("os.environ", {"TOMORROW_API_KEY": "local-test-key"}),
-            patch.object(httpx, "request", return_value=httpx.Response(429)) as mock_request,
+            patch.dict("os.environ", {"OPENWEATHER_API_KEY": "fixture-only"}),
+            patch.object(httpx, "request", return_value=httpx.Response(401)) as send,
+            self.assertRaises(ProviderError) as failure,
         ):
-            with self.assertRaises(HTTPException) as failure:
-                weather.provider_json("weather/forecast", params={"location": "Lahore"}, feature="forecast")
-        self.assertEqual(failure.exception.status_code, 503)
-        self.assertIn("request limit", failure.exception.detail)
-        self.assertNotIn("local-test-key", failure.exception.detail)
-        self.assertEqual(mock_request.call_args.kwargs["headers"]["apikey"], "local-test-key")
-        self.assertEqual(mock_request.call_args.kwargs["params"], {"location": "Lahore"})
+            openweather.current(31.52, 74.36)
+        self.assertEqual(failure.exception.status, 401)
+        self.assertIn("/weather", str(failure.exception))
+        self.assertNotIn("fixture-only", str(failure.exception))
+        self.assertEqual(send.call_args.kwargs["params"]["appid"], "fixture-only")
 
-    def test_archive_uses_daily_precipitation_totals_and_bounds_dates(self):
-        intervals = [
-            {
-                "startTime": "2026-11-01T00:00:00Z",
-                "values": {"temperatureMax": 23, "precipitationAccumulationSum": 4.5, "solarGHIAvg": 120},
-            },
-            {"startTime": "2026-11-02T00:00:00Z", "values": {}},
-        ]
-        day = date(2026, 11, 1)
-        with patch.object(weather, "provider_json", return_value={
-            "data": {"timelines": [{"timestep": "1d", "intervals": intervals}]},
-        }) as mock_request:
-            rows = weather.history(31.52, 74.36, day, day)["daily"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["precipitation_mm"], 4.5)
-        self.assertEqual(rows[0]["solar_w_m2"], 120)
-        body = mock_request.call_args.kwargs["body"]
-        self.assertEqual(body["location"], [31.52, 74.36])
-        self.assertEqual(body["timezone"], "UTC")
-        self.assertIn("precipitationAccumulationSum", body["fields"])
-
-    def test_soil_and_solar_keep_missing_values_and_report_plan_denial(self):
-        result = {"data": {"timelines": [{"timestep": "1h", "intervals": [
-            {"startTime": "2026-11-24T05:00:00Z", "values": {"soilMoistureVolumetric0To10": 27}},
-            {"startTime": "2026-11-24T06:00:00Z", "values": {}},
-        ]}]}}
-        with patch.object(weather, "provider_json", return_value=result):
-            rows = weather.tomorrow_agriculture(31.52, 74.36)["hourly"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["soil_moisture_surface_pct"], 27)
-        self.assertIsNone(rows[0]["solar_w_m2"])
-
+    def test_irrigation_forecast_uses_complete_daily_depths_and_reference_et(self):
+        daily = {"date": datetime.now(weather.LOCAL_ZONE).date().isoformat(), "rain_mm": 2, "eto_mm": 2.2}
+        valid = {"daily": [daily], "hourly": [{"time": datetime.now(UTC).isoformat()}]}
         with (
-            patch.dict("os.environ", {"TOMORROW_API_KEY": "local-test-key"}),
-            patch.object(httpx, "request", return_value=httpx.Response(403)),
+            patch.object(openweather, "forecast") as primary,
+            patch.object(weather.backup, "forecast", return_value=valid),
         ):
-            with self.assertRaises(HTTPException) as failure:
-                weather.provider_json("historical", body={}, feature="archive history", access_limited=True)
-        self.assertEqual(failure.exception.status_code, 403)
-        self.assertIn("Check your API plan", failure.exception.detail)
-
-    def test_denied_soil_and_solar_uses_backup_with_its_actual_depths(self):
-        readings = {
-            "time": ["2026-11-24T05:00"],
-            "soil_moisture_0_to_1cm": [0.29],
-            "soil_temperature_0cm": [18],
-            "shortwave_radiation": [0],
-        }
-        with (
-            patch.object(weather, "provider_json", side_effect=HTTPException(403)),
-            patch.object(weather.backup, "open_meteo", return_value={"hourly": readings}),
-        ):
-            result = weather.agriculture(31.52, 74.36)
-        self.assertEqual(result["source"], "Open-Meteo")
-        self.assertEqual(result["soil_profile"], "open-meteo")
-        self.assertEqual(result["hourly"][0]["soil_moisture_0_1_pct"], 29)
-        self.assertEqual(result["hourly"][0]["solar_w_m2"], 0)
-        self.assertNotIn("soil_moisture_surface_pct", result["hourly"][0])
-
-    def test_forecast_falls_back_for_missing_et_and_named_location(self):
-        incomplete = {"daily": [{"date": "2026-11-24", "rain_mm": 0, "eto_mm": None}]}
-        complete = {"daily": [{"date": "2026-11-24", "rain_mm": 0, "eto_mm": 2.2}]}
-        places = [
-            {"name": "Lahore", "latitude": 34, "longitude": 75, "country": "Other"},
-            {"name": "Lahore", "latitude": 31.52, "longitude": 74.36, "country": "Pakistan"},
-        ]
-        with (
-            patch.object(weather, "tomorrow_forecast", return_value=incomplete),
-            patch.object(weather, "geocode", return_value=places),
-            patch.object(weather.backup, "forecast", return_value=complete) as fetch,
-        ):
-            result = weather.forecast("Lahore, Pakistan")
-        fetch.assert_called_once_with(31.52, 74.36, "Lahore, Pakistan")
+            result = weather.irrigation_forecast("31.52,74.36")
+        primary.assert_not_called()
         self.assertEqual(result["source"], "Open-Meteo")
         self.assertEqual(result["daily"][0]["eto_mm"], 2.2)
 
-    def test_archive_fallback_converts_daily_solar_energy_and_omits_missing(self):
+    def test_irrigation_rejects_missing_reference_et(self):
+        day = datetime.now(weather.LOCAL_ZONE).date().isoformat()
+        with (
+            patch.object(weather.backup, "forecast", return_value={
+                "daily": [{"date": day, "rain_mm": 0, "eto_mm": None}],
+            }),
+            self.assertRaises(HTTPException) as failure,
+        ):
+            weather.irrigation_forecast("31.52,74.36")
+        self.assertEqual(failure.exception.status_code, 502)
+        self.assertIn("reference ET", failure.exception.detail)
+
+    def test_forecast_uses_live_openweather_and_falls_back_if_invalid(self):
+        now = datetime.now(UTC)
+        primary = {"daily": [], "interval_hours": 3, "hourly": [{"time": (now + timedelta(hours=2)).isoformat()}]}
+        fallback = {
+            "daily": [{"date": now.astimezone(weather.LOCAL_ZONE).date().isoformat(), "rain_mm": 0, "eto_mm": 3}],
+            "hourly": [{"time": now.isoformat()}],
+        }
+        with (
+            patch.object(openweather, "forecast", side_effect=[primary, ProviderError("OpenWeather /forecast: HTTP 503", 503)]),
+            patch.object(weather.backup, "forecast", return_value=fallback) as load,
+        ):
+            first = weather.forecast("30.15,71.52")
+            second = weather.forecast("31.52,74.36")
+        self.assertEqual(first["source"], "OpenWeather")
+        self.assertEqual(second["source"], "Open-Meteo")
+        self.assertIn("HTTP 503", second["fallback_reason"])
+        load.assert_called_once_with(31.52, 74.36, None)
+
+    def test_archive_converts_daily_solar_energy_and_omits_missing(self):
         data = {
             "header": {"time_standard": "UTC"},
             "parameters": {"ALLSKY_SFC_SW_DWN": {"units": "kW-hr/m^2/day"}},
@@ -135,10 +98,7 @@ class TomorrowWeatherTest(TestCase):
             }},
         }
         day = date(2026, 10, 1)
-        with (
-            patch.object(weather, "provider_json", side_effect=HTTPException(403)),
-            patch.object(weather.backup, "fetch", return_value=data) as fetch,
-        ):
+        with patch.object(weather.backup, "fetch", return_value=data) as fetch:
             result = weather.history(31.52, 74.36, day, day)
         self.assertEqual(fetch.call_args.args[1]["time-standard"], "UTC")
         self.assertEqual(result["source"], "NASA POWER")
@@ -146,22 +106,53 @@ class TomorrowWeatherTest(TestCase):
         self.assertEqual(result["daily"][0]["precipitation_mm"], 0)
         self.assertIsNone(result["daily"][0]["min_c"])
 
-    def test_each_request_fetches_again_and_dual_failure_drops_previous_values(self):
+    def test_soil_and_solar_preserve_model_depths(self):
+        readings = {
+            "time": ["2026-11-24T05:00"],
+            "soil_moisture_0_to_1cm": [0.29],
+            "soil_temperature_0cm": [18],
+            "shortwave_radiation": [0],
+        }
+        with patch.object(weather.backup, "open_meteo", return_value={"hourly": readings}):
+            result = weather.agriculture(31.52, 74.36)
+        self.assertEqual(result["source"], "Open-Meteo")
+        self.assertEqual(result["hourly"][0]["soil_moisture_0_1_pct"], 29)
+        self.assertEqual(result["hourly"][0]["solar_w_m2"], 0)
+
+    def test_fresh_cache_expires_and_dual_failure_drops_previous_values(self):
+        now = datetime.now(UTC).isoformat()
         with (
-            patch.object(weather, "tomorrow_current", side_effect=[
-                {"temperature_c": 18}, {"temperature_c": 19}, HTTPException(503),
+            patch.object(weather, "monotonic") as clock,
+            patch.object(openweather, "current", side_effect=[
+                {"temperature_c": 18, "time": now}, {"temperature_c": 19, "time": now},
+                ProviderError("OpenWeather /weather: HTTP 503", 503),
             ]) as primary,
             patch.object(weather.backup, "current", side_effect=httpx.ConnectError("offline")) as fallback,
         ):
+            clock.return_value = 10
             first = weather.current("31.52,74.36")
+            self.assertEqual(weather.current("31.52,74.36")["temperature_c"], 18)
+            clock.return_value = 210
             second = weather.current("31.52,74.36")
+            clock.return_value = 410
             with self.assertRaises(HTTPException) as failure:
                 weather.current("31.52,74.36")
         self.assertEqual(first["temperature_c"], 18)
         self.assertEqual(second["temperature_c"], 19)
-        self.assertEqual(second["source"], "Tomorrow.io")
+        self.assertEqual(second["source"], "OpenWeather")
         self.assertIn("retrieved_at", second)
         self.assertEqual(primary.call_count, 3)
         fallback.assert_called_once_with(31.52, 74.36)
         self.assertEqual(failure.exception.status_code, 502)
         self.assertIn("both weather providers", failure.exception.detail)
+
+    def test_stale_primary_reading_uses_fresh_fallback(self):
+        stale = (datetime.now(UTC) - timedelta(hours=4)).isoformat()
+        fresh = datetime.now(UTC).isoformat()
+        with (
+            patch.object(openweather, "current", return_value={"temperature_c": 19, "time": stale}),
+            patch.object(weather.backup, "current", return_value={"temperature_c": 18, "time": fresh}),
+        ):
+            data = weather.current("30.1575,71.5249")
+        self.assertEqual(data["source"], "Open-Meteo")
+        self.assertIn("stale", data["fallback_reason"])

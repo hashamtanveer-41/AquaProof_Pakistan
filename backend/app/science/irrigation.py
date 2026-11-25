@@ -1,5 +1,5 @@
 from datetime import date, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -18,10 +18,23 @@ class CanalTurn(Input):
     flow_m3_hour: float = Field(gt=0, le=100000, allow_inf_nan=False)
 
 
+class PumpEnergy(Input):
+    fuel: Literal["electricity", "diesel"]
+    units_per_hour: float = Field(gt=0, le=10000, allow_inf_nan=False)
+    pkr_per_unit: float = Field(ge=0, le=100000, allow_inf_nan=False)
+
+
 class Tubewell(Input):
     flow_m3_hour: float = Field(gt=0, le=100000, allow_inf_nan=False)
     hours_per_day: float = Field(gt=0, le=24, allow_inf_nan=False)
     pkr_hour: NonNegative
+    energy: PumpEnergy | None = None
+
+    @model_validator(mode="after")
+    def derive_hourly_cost(self):
+        if self.energy:
+            self.pkr_hour = self.energy.units_per_hour * self.energy.pkr_per_unit
+        return self
 
 
 class IrrigationSettings(Input):
@@ -32,6 +45,7 @@ class IrrigationSettings(Input):
     surface_taw_mm: float = Field(gt=0, le=80, allow_inf_nan=False)
     surface_raw_mm: NonNegative
     initial_surface_depletion_mm: NonNegative
+    soil_ece_ds_m: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
     canal: CanalTurn | None = None
     tubewell: Tubewell | None = None
 
@@ -48,6 +62,20 @@ class Scenario(Input):
     rain_factor: float = Field(default=1, ge=0, le=3, allow_inf_nan=False)
     canal_delay_days: int = Field(default=0, ge=0, le=60)
     pump_pkr_hour: NonNegative | None = None
+    canal_supply_factor: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    pump_available_from: date | None = None
+    pump_hours_cap: float | None = Field(default=None, ge=0, le=24, allow_inf_nan=False)
+
+
+def salinity_screen(crop, settings):
+    # FAO Irrigation and Drainage Paper 61, Annex 1. This is an indicative
+    # root-zone saturated paste threshold, not irrigation-water conductivity.
+    threshold = {"Wheat": 6, "Cotton": 7.7, "Maize": 1.7}.get(crop)
+    reading = settings.soil_ece_ds_m
+    if threshold is None or reading is None:
+        return None
+    return {"ece_ds_m": reading, "threshold_ds_m": threshold, "above_threshold": reading > threshold,
+            "source": "FAO Irrigation and Drainage Paper 61, Annex 1"}
 
 
 def crop_demand(forecast, crop, planted, settings, rain_factor):
@@ -73,6 +101,8 @@ def crop_demand(forecast, crop, planted, settings, rain_factor):
             "crop_et_mm": transpiration + evaporation,
             "potential_transpiration_mm": transpiration,
             "soil_evaporation_mm": evaporation,
+            "max_c": day.get("max_c"),
+            "precip_probability_pct": day.get("precip_probability_pct"),
             "stage": stage,
             "active_crop": stage not in ("Pre-planting", "Beyond modeled season"),
         })
@@ -85,7 +115,8 @@ def canal_capacity(day, settings, scenario):
         return 0
     opening = canal.first_date + timedelta(days=scenario.canal_delay_days)
     offset = (day - opening).days
-    return canal.flow_m3_hour * canal.hours if offset >= 0 and offset % canal.cycle_days == 0 else 0
+    return (canal.flow_m3_hour * canal.hours * scenario.canal_supply_factor
+            if offset >= 0 and offset % canal.cycle_days == 0 else 0)
 
 
 def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, price, fixed=None):
@@ -152,6 +183,10 @@ def solve_plan(days, bounds_canal, bounds_pump, settings, net_mm_to_volume, pric
             "canal_m3": round(value(canal, i) * net_mm_to_volume, 2),
             "pump_m3": round(value(pump, i) * net_mm_to_volume, 2),
             "depletion_mm": round(value(deficit, i), 2),
+            "root_zone_available_mm": round(max(0.0, settings.taw_mm - value(deficit, i)), 2),
+            "excess_water_mm": round(value(drain, i), 2),
+            "pump_hours": round(value(pump, i) * net_mm_to_volume / settings.tubewell.flow_m3_hour, 2)
+            if settings.tubewell else 0,
             "stress_mm": round(value(stress, i), 2) if day["active_crop"] else 0,
             "unmet_et_mm": round(value(unmet, i), 2),
         } for i, day in enumerate(days)],
@@ -168,7 +203,15 @@ def daily_bound(day, capacity, fixed, source, net_mm_to_volume):
 def plan_supply(days, settings, scenario):
     canal = [canal_capacity(date.fromisoformat(day["date"]), settings, scenario) for day in days]
     pump = settings.tubewell
-    pump_capacity = [pump.flow_m3_hour * pump.hours_per_day if pump else 0] * len(days)
+    pump_capacity = [0] * len(days)
+    if pump:
+        hours = (pump.hours_per_day if scenario.pump_hours_cap is None
+                 else min(pump.hours_per_day, scenario.pump_hours_cap))
+        pump_capacity = [
+            pump.flow_m3_hour * hours
+            if not scenario.pump_available_from or date.fromisoformat(day["date"]) >= scenario.pump_available_from else 0
+            for day in days
+        ]
     price = 0 if not pump else (
         pump.pkr_hour if scenario.pump_pkr_hour is None else scenario.pump_pkr_hour
     ) / pump.flow_m3_hour

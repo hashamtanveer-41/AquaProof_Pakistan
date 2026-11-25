@@ -20,11 +20,14 @@ import {
 } from "lucide-react";
 import { acres, type Farmer, type Field, type Point, type Region } from "@/domain/data";
 import { Button, Chip, Empty, PageTitle, Stat } from "@/components/ui";
-import { polygon, request } from "@/domain/registry";
-import { satelliteSource, type Basemap } from "./basemap";
+import { request } from "@/domain/registry";
+import { formatWeatherTime } from "@/domain/weather";
+import { type ArcGISConfig, type Basemap } from "./basemap";
+import { exportBoundaries, readBoundary } from "./boundaryFile";
 import { GeoCanvas } from "./GeoCanvas";
 import {
   areaUnits,
+  cropStageStyles,
   irrigationStyle,
   irrigationStyles,
   previewArea,
@@ -33,7 +36,7 @@ import {
 } from "./parcel";
 
 type Place = {
-  id: number;
+  id: number | string;
   name: string;
   region?: string;
   country?: string;
@@ -41,6 +44,9 @@ type Place = {
   latitude: number;
   longitude: number;
 };
+type Suggestion = { text: string; magic_key: string };
+type PlaceResults = { results: Place[]; source: string; fallback_reason?: string };
+type MapWeather = { temperature_c: number; source: string; time: string };
 
 function coordinatePair(value: string): Point | undefined {
   const match = /^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/.exec(value);
@@ -108,20 +114,88 @@ export function FarmMap({
   const [searching, setSearching] = useState(false);
   const [panel, setPanel] = useState(true);
   const [full, setFull] = useState(false);
-  const [basemap, setBasemap] = useState<Basemap>(satelliteSource ? "satellite" : "street");
+  const [basemap, setBasemap] = useState<Basemap>("street");
+  const [arcgis, setArcgis] = useState<ArcGISConfig>();
+  const [openMap, setOpenMap] = useState(true);
+  const arcgisConfigured = Boolean(arcgis?.browser_token || arcgis?.server_basemaps);
+  const viewOnlyArcgis = arcgisConfigured && !arcgis?.digitization_authorized;
+  const useOpenMap = openMap || (draft !== null && (viewOnlyArcgis || basemap !== "street"));
+  const arcgisToken = useOpenMap ? null : arcgis?.browser_token;
+  const arcgisServer = !useOpenMap && Boolean(arcgis?.server_basemaps);
   const [imageryError, setImageryError] = useState("");
   const [ready, setReady] = useState(false);
   const [resetView, setResetView] = useState(0);
   const [target, setTarget] = useState<Point>();
   const [locationLabel, setLocationLabel] = useState("");
   const [places, setPlaces] = useState<Place[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [placeStatus, setPlaceStatus] = useState("");
   const placeRequest = useRef<AbortController>(null);
   const [preview, setPreview] = useState<Point[]>([]);
   const [clearDraft, setClearDraft] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const [colorMode, setColorMode] = useState<"irrigation" | "crop">("irrigation");
+  const [showWeather, setShowWeather] = useState(false);
+  const [weatherReading, setWeatherReading] = useState<MapWeather>();
+  const [weatherStatus, setWeatherStatus] = useState("");
+  const importInput = useRef<HTMLInputElement>(null);
+  const importing = useRef(false);
 
   useEffect(() => () => placeRequest.current?.abort(), []);
+  const fieldId = field?.id;
+  useEffect(() => {
+    setWeatherReading(undefined);
+    setWeatherStatus("");
+    if (!showWeather || !fieldId) return;
+    const controller = new AbortController();
+    let pending = false;
+    function load() {
+      if (pending) return;
+      pending = true;
+      request<MapWeather>(
+        `/fields/${encodeURIComponent(fieldId!)}/weather/current`,
+        "GET",
+        undefined,
+        controller.signal,
+      )
+        .then((reading) => {
+          if (!controller.signal.aborted) {
+            setWeatherReading(reading);
+            setWeatherStatus("");
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            setWeatherReading(undefined);
+            setWeatherStatus(error instanceof Error ? error.message : "Field weather unavailable.");
+          }
+        })
+        .finally(() => {
+          pending = false;
+        });
+    }
+    load();
+    const timer = window.setInterval(load, 180_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [showWeather, fieldId]);
+  useEffect(() => {
+    if (!registryAvailable) return;
+    const controller = new AbortController();
+    request<ArcGISConfig>("/map/config", "GET", undefined, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setArcgis(data);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted)
+          setImageryError("Map provider configuration is unavailable.");
+      });
+    return () => controller.abort();
+  }, [registryAvailable]);
   useEffect(() => {
     if (!full) return;
     const previousOverflow = document.body.style.overflow;
@@ -141,18 +215,35 @@ export function FarmMap({
     [fields, region],
   );
   const owner = farmers.find((person) => person.id === field?.farmerId);
+  const farmerById = useMemo(
+    () => new Map(farmers.map((farmer) => [farmer.id, farmer])),
+    [farmers],
+  );
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.acres, 0), [visible]);
   const q = query.trim();
-  const canDraw = ready && registryAvailable;
+  const displayedBasemap = useOpenMap ? "street" : basemap;
   const currentArea = previewArea(preview.length ? preview : (draft ?? []));
-  const canSave = Boolean(canDraw && draft && validParcel(draft));
+  const weatherPoint =
+    showWeather && weatherReading && field?.longitude != null && field.latitude != null
+      ? {
+          point: [field.longitude, field.latitude] as Point,
+          temperature_c: weatherReading.temperature_c,
+        }
+      : undefined;
+  const canSave = Boolean(ready && registryAvailable && draft && validParcel(draft));
   const matches = q
     ? fields
         .filter((item) => {
-          const name = farmers.find((person) => person.id === item.farmerId)?.name ?? "";
-          return [item.id, item.name, item.village, name].some((label) =>
-            label.toLowerCase().includes(q.toLowerCase()),
-          );
+          const farmer = farmerById.get(item.farmerId);
+          return [
+            item.id,
+            item.name,
+            item.village,
+            item.region,
+            farmer?.district,
+            farmer?.tehsil,
+            farmer?.name,
+          ].some((label) => label?.toLowerCase().includes(q.toLowerCase()));
         })
         .slice(0, 5)
     : [];
@@ -160,6 +251,7 @@ export function FarmMap({
   function resetSearch() {
     placeRequest.current?.abort();
     setPlaces([]);
+    setSuggestions([]);
     setPlaceStatus("");
   }
 
@@ -178,8 +270,32 @@ export function FarmMap({
     setSearching(false);
   }
 
-  async function findPlace() {
-    if (q.length < 2 || draft) return;
+  useEffect(() => {
+    if (!searching || draft || q.length < 3 || coordinatePair(q)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      request<Suggestion[]>(
+        `/map/suggest?q=${encodeURIComponent(q)}`,
+        "GET",
+        undefined,
+        controller.signal,
+      )
+        .then((items) => {
+          if (!controller.signal.aborted) setSuggestions(items);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setSuggestions([]);
+        });
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [q, searching, draft]);
+
+  async function findPlace(suggestion?: Suggestion) {
+    const term = suggestion?.text ?? q;
+    if (term.length < 2 || draft) return;
     resetSearch();
     const point = coordinatePair(q);
     if (point && !validMapPoint(point)) {
@@ -188,14 +304,30 @@ export function FarmMap({
     }
     if (point) {
       centerOn(point, q);
+      const controller = new AbortController();
+      placeRequest.current = controller;
+      request<{ name: string }>(
+        `/map/reverse?latitude=${point[1]}&longitude=${point[0]}`,
+        "GET",
+        undefined,
+        controller.signal,
+      )
+        .then(({ name }) => {
+          if (!controller.signal.aborted) setLocationLabel(name);
+        })
+        .catch(() => {
+          /* Keep the coordinates as the location label. */
+        });
       return;
     }
     const controller = new AbortController();
     placeRequest.current = controller;
     try {
       setPlaceStatus("Searching places…");
-      const results = await request<Place[]>(
-        `/locations?q=${encodeURIComponent(q)}`,
+      const params = new URLSearchParams({ q: term });
+      if (suggestion) params.set("magic_key", suggestion.magic_key);
+      const { results, source } = await request<PlaceResults>(
+        `/map/search?${params}`,
         "GET",
         undefined,
         controller.signal,
@@ -204,13 +336,16 @@ export function FarmMap({
       const usable = results.filter(({ longitude, latitude }) =>
         validMapPoint([longitude, latitude]),
       );
-      setPlaces(
-        usable.sort(
-          (left, right) => Number(right.country_code === "PK") - Number(left.country_code === "PK"),
-        ),
-      );
+      if (suggestion && usable[0]) {
+        setQuery(usable[0].name);
+        centerOn([usable[0].longitude, usable[0].latitude], usable[0].name);
+        return;
+      }
+      setPlaces(usable);
       setPlaceStatus(
-        usable.length ? "" : "No places found. Try a nearby town or enter coordinates.",
+        usable.length
+          ? `Results from ${source}`
+          : "No places found. Try a nearby town or enter coordinates.",
       );
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -218,15 +353,29 @@ export function FarmMap({
     }
   }
 
-  function startDraft(points: Point[] = []) {
-    if (!canDraw) return;
+  async function importBoundary(file: File) {
+    if (importing.current || draft || !ready) return;
+    importing.current = true;
+    try {
+      const points = await readBoundary(file);
+      startDraft(points, false);
+      setTarget(points[0]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Boundary import failed.");
+    } finally {
+      importing.current = false;
+    }
+  }
+
+  function startDraft(points: Point[] = [], editExisting = points.length > 0) {
+    if (!ready) return;
     setPreview([]);
     resetSearch();
     if (points.length) {
       setTarget(undefined);
       setLocationLabel("");
     }
-    setEditing(points.length > 0);
+    setEditing(editExisting);
     setDraft(points);
     setPanel(true);
     setSearching(false);
@@ -267,7 +416,7 @@ export function FarmMap({
         </Button>
         <Button
           variant="primary"
-          disabled={!draft && !canDraw}
+          disabled={!draft && !ready}
           onClick={draft ? discardDraft : () => startDraft()}
         >
           {draft ? <X size={16} /> : <SquareDashed size={17} />}
@@ -388,6 +537,16 @@ export function FarmMap({
                   <Search size={15} /> Search places or coordinates
                 </button>
                 {placeStatus && <p role="status">{placeStatus}</p>}
+                {!places.length &&
+                  suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion.magic_key}
+                      type="button"
+                      onClick={() => void findPlace(suggestion)}
+                    >
+                      <MapPin size={15} /> {suggestion.text}
+                    </button>
+                  ))}
                 {places.map((place) => (
                   <button
                     type="button"
@@ -408,10 +567,21 @@ export function FarmMap({
             )}
           </div>
           <div className="map-actions">
+            <select
+              className="basemap-select"
+              aria-label="Field color"
+              value={colorMode}
+              onChange={(event) =>
+                setColorMode(event.target.value === "crop" ? "crop" : "irrigation")
+              }
+            >
+              <option value="irrigation">Irrigation status</option>
+              <option value="crop">Crop stage</option>
+            </select>
             {full && (
               <Button
                 variant="primary"
-                disabled={!draft && !canDraw}
+                disabled={!draft && !ready}
                 onClick={draft ? discardDraft : () => startDraft()}
               >
                 {draft ? <X size={16} /> : <SquareDashed size={16} />}
@@ -421,24 +591,19 @@ export function FarmMap({
             <select
               className="basemap-select"
               aria-label="Basemap"
-              value={basemap}
-              title={
-                satelliteSource
-                  ? "Choose a basemap"
-                  : "Satellite and hybrid require licensed imagery"
-              }
+              value={useOpenMap && arcgisConfigured ? "open" : displayedBasemap}
+              disabled={draft !== null}
               onChange={(event) => {
                 setImageryError("");
-                setBasemap(event.target.value as Basemap);
+                const choice = event.target.value;
+                setOpenMap(choice === "open");
+                setBasemap(choice === "open" ? "street" : (choice as Basemap));
               }}
             >
-              <option value="street">Street</option>
-              <option value="satellite" disabled={!satelliteSource}>
-                Satellite
-              </option>
-              <option value="hybrid" disabled={!satelliteSource}>
-                Hybrid
-              </option>
+              <option value="street">{arcgisConfigured ? "ArcGIS Street" : "Street"}</option>
+              {arcgisConfigured && <option value="open">Open street</option>}
+              {arcgisConfigured && <option value="satellite">ArcGIS Satellite (view only)</option>}
+              {arcgisConfigured && <option value="hybrid">ArcGIS Hybrid (view only)</option>}
             </select>
             <button
               type="button"
@@ -471,6 +636,11 @@ export function FarmMap({
             {imageryError}
           </div>
         )}
+        {draft === null && (viewOnlyArcgis || basemap !== "street") && !useOpenMap && (
+          <div className="map-imagery-notice" role="status">
+            Drawing and editing use the street map.
+          </div>
+        )}
         <div className={panel ? "map-grid" : "map-grid map-only"}>
           <GeoCanvas
             fields={visible}
@@ -484,11 +654,11 @@ export function FarmMap({
             target={target}
             resetView={resetView}
             clearDraft={clearDraft}
-            basemap={basemap}
-            onImageryError={() => {
-              setBasemap("street");
-              setImageryError("Satellite imagery could not be loaded. Street view is active.");
-            }}
+            basemap={displayedBasemap}
+            arcgisToken={arcgisToken}
+            arcgisServer={arcgisServer}
+            colorMode={colorMode}
+            weatherPoint={weatherPoint}
           />
           {panel && (
             <aside className="field-panel">
@@ -510,12 +680,19 @@ export function FarmMap({
                     {editing ? "Editing boundary" : "Drawing boundary"}
                   </Chip>
                   <h2>{editing && field ? field.name : "New farm boundary"}</h2>
+                  {!registryAvailable && (
+                    <p role="status">
+                      You can mark boundary points now. Saving is available when the registry
+                      reconnects.
+                    </p>
+                  )}
                   <p>
                     {editing
                       ? "Drag a vertex to move it or select a midpoint to add a vertex. Select a vertex and press Delete to remove it."
                       : "Select at least three points, then click the first point to close the boundary."}
                   </p>
                   {currentArea > 0 && <ParcelArea value={currentArea} estimate />}
+                  <p>Undo with Ctrl or Command + Z. Add Shift to redo.</p>
                   {draft.length >= 3 && !validParcel(draft) && (
                     <p role="alert">
                       The boundary must enclose an area without duplicate vertices.
@@ -558,7 +735,11 @@ export function FarmMap({
                       <dt>
                         <MapPin size={14} /> Location
                       </dt>
-                      <dd>{field.region}</dd>
+                      <dd>
+                        {[field.village, owner?.tehsil, owner?.district, field.region]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </dd>
                     </div>
                     {field.latitude != null && field.longitude != null && (
                       <div>
@@ -597,9 +778,12 @@ export function FarmMap({
                       View Farmer Profile <ArrowUpRight size={15} />
                     </Button>
                     <Button onClick={onWeather}>Field weather</Button>
+                    <Button onClick={() => setShowWeather((value) => !value)}>
+                      {showWeather ? "Hide weather marker" : "Show weather marker"}
+                    </Button>
                     <Button onClick={onIrrigation}>Irrigation plan</Button>
                     <Button
-                      disabled={!canDraw || deleting}
+                      disabled={!ready || deleting}
                       onClick={() => startDraft([...field.points])}
                     >
                       <PenLine size={15} /> Edit Boundary
@@ -608,6 +792,14 @@ export function FarmMap({
                       <Trash2 size={15} /> Remove field
                     </Button>
                   </div>
+                  {showWeather && (
+                    <p role={weatherStatus ? "alert" : "status"}>
+                      {weatherStatus ||
+                        (weatherReading
+                          ? `${weatherReading.temperature_c.toFixed(1)} °C · ${weatherReading.source} · ${formatWeatherTime(weatherReading.time)} PKT`
+                          : "Loading field weather…")}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <Empty
@@ -619,13 +811,18 @@ export function FarmMap({
           )}
         </div>
         <footer className="map-footer">
-          <div className="parcel-legend" aria-label="Irrigation status legend">
-            {Object.values(irrigationStyles).map(({ color, label }) => (
-              <span className="parcel-status" key={label}>
-                <i style={{ background: color }} />
-                {label}
-              </span>
-            ))}
+          <div
+            className="parcel-legend"
+            aria-label={colorMode === "crop" ? "Crop stage legend" : "Irrigation status legend"}
+          >
+            {(colorMode === "crop" ? cropStageStyles : Object.values(irrigationStyles)).map(
+              ({ color, label }) => (
+                <span className="parcel-status" key={label}>
+                  <i style={{ background: color }} />
+                  {label}
+                </span>
+              ),
+            )}
           </div>
           {locationLabel && <span>{locationLabel}</span>}
           {registryAvailable && (
@@ -644,31 +841,26 @@ export function FarmMap({
         <span>
           <CircleHelp size={15} /> Mapped boundaries are officer records.
         </span>
-        <button
-          className="text-action"
-          disabled={!visible.length}
-          onClick={() => {
-            const data = {
-              type: "FeatureCollection",
-              features: visible.map(({ id, name, acres, points }) => ({
-                type: "Feature",
-                geometry: polygon(points),
-                properties: { id, name, acres },
-              })),
-            };
-            const url = URL.createObjectURL(
-              new Blob([JSON.stringify(data, null, 2)], { type: "application/geo+json" }),
-            );
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = "aquaproof-boundaries.geojson";
-            link.click();
-            URL.revokeObjectURL(url);
-            notify("Boundary file exported.");
+        <input
+          ref={importInput}
+          type="file"
+          accept=".geojson,.json,.kml"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) void importBoundary(file);
           }}
-        >
-          <ArrowDownToLine size={14} /> Export boundaries
-        </button>
+        />
+        <Button disabled={!ready || Boolean(draft)} onClick={() => importInput.current?.click()}>
+          Import boundary
+        </Button>
+        <Button disabled={!visible.length} onClick={() => exportBoundaries(visible, "geojson")}>
+          <ArrowDownToLine size={14} /> GeoJSON
+        </Button>
+        <Button disabled={!visible.length} onClick={() => exportBoundaries(visible, "kml")}>
+          <ArrowDownToLine size={14} /> KML
+        </Button>
       </div>
     </>
   );

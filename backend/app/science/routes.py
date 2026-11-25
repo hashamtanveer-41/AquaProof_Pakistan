@@ -1,19 +1,31 @@
 from datetime import UTC, date, datetime, timedelta
-import json
-import os
 from typing import Literal
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query
 from psycopg.types.json import Jsonb
 from pydantic import Field
 
-from ..database import connect
 from ..assistant_access import queue_field_recheck
+from ..database import connect
 from ..registry import Input, field_by_id, require
 from . import weather
-from .crops import CROPS, CROP_NAMES, crop_stage, local_today
-from .irrigation import IrrigationSettings, NonNegative, Scenario, apply_decisions, canal_capacity, optimize
+from .crops import (
+    CROP_NAMES,
+    CROPS,
+    crop_stage,
+    lifecycle,
+    local_today,
+    regional_reference,
+)
+from .irrigation import (
+    IrrigationSettings,
+    NonNegative,
+    Scenario,
+    apply_decisions,
+    canal_capacity,
+    optimize,
+    salinity_screen,
+)
 
 router = APIRouter(prefix="/api/fields", tags=["weather and irrigation"])
 locations = APIRouter(prefix="/api", tags=["locations"])
@@ -27,6 +39,21 @@ def locate(q: str = Query(min_length=2, max_length=120)):
 @locations.get("/crop-library")
 def crop_library():
     return sorted(CROPS)
+
+
+@router.get("/{field_id}/crop-lifecycle")
+def crop_lifecycle(field_id: str):
+    with connect() as connection:
+        field = field_by_id(connection, field_id)
+    season = next(iter(field["seasons"]), None)
+    if not season or not season["planted"]:
+        return {"status": "planting_date_required"}
+    crop = CROP_NAMES.get(season["crop"].casefold())
+    if not crop:
+        return {"status": "calendar_unavailable"}
+    return {"status": "modeled", "variety": season["variety"], "season_id": season["id"],
+            "regional_reference": regional_reference(field["region"], crop),
+            **lifecycle(crop, date.fromisoformat(season["planted"]), local_today())}
 
 
 def location(connection, field_id):
@@ -153,7 +180,7 @@ def simulate(field_id: str, scenario: Scenario):
     with connect() as connection:
         field, settings, season, crop, point = simulation_inputs(connection, field_id)
         decisions = read_decisions(connection, season["id"])
-    forecast_data = weather.forecast(weather.point_query(*weather_coordinates(point)))
+    forecast_data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(point)))
     result = simulate_inputs(field, settings, season, crop, point, forecast_data, scenario)
     return with_decisions(result, field, settings, scenario, decisions)
 
@@ -168,7 +195,7 @@ def simulation_inputs(connection, field_id):
     season = field["seasons"][0]
     crop = CROP_NAMES.get(season["crop"].casefold())
     if not crop:
-        raise HTTPException(422, "No PI-Advisor crop calendar is available for this crop")
+        raise HTTPException(422, "No crop calendar is available for this crop")
     point = {key: field[key] for key in ("latitude", "longitude")}
     return field, settings, season, crop, point
 
@@ -181,11 +208,29 @@ def simulate_inputs(field, settings, season, crop, point, forecast_data, scenari
         raise HTTPException(409, "The forecast does not overlap the modeled crop season")
     if any(row["rain_mm"] is None or row["eto_mm"] is None or row["rain_mm"] < 0 or row["eto_mm"] < 0 for row in daily):
         raise HTTPException(502, "The forecast did not include usable rainfall and reference ET")
+    warnings = []
+    measured_at = field.get("irrigation_measured_at")
+    if not measured_at or datetime.now(UTC) - measured_at > timedelta(hours=36):
+        warnings.append("Current soil-water measurements are missing or older than 36 hours. Review the assumptions before applying the plan.")
+    if crop == "Rice":
+        warnings.append("Rice water balance excludes ponding, land preparation, seepage and paddy losses. Officer review is required.")
+    if any(row.get("max_c") is not None and row["max_c"] >= 40 for row in daily):
+        warnings.append("A forecast high reaches 40 °C. Check crop and growth-stage sensitivity with an officer.")
+    if any(row["rain_mm"] * scenario.rain_factor >= 40 for row in daily):
+        warnings.append("The scenario contains heavy rain. Inspect drainage and ponding before changing irrigation.")
+    salinity = salinity_screen(crop, settings)
+    if salinity and salinity["above_threshold"]:
+        warnings.append("The officer-entered soil ECe exceeds the generic FAO threshold. Review salinity in the field.")
     return {
         **point,
         **optimize(daily, crop, planted, field["acres"] * 4046.8564224, settings, scenario),
         "weather_source": forecast_data["source"],
         "weather_retrieved_at": forecast_data["retrieved_at"],
+        "weather_fallback_reason": forecast_data.get("fallback_reason"),
+        "soil_inputs_source": "Officer-entered root-zone and surface water settings",
+        "soil_measured_at": measured_at,
+        "warnings": warnings,
+        "salinity": salinity,
         "season_id": season["id"],
     }
 
@@ -236,7 +281,7 @@ def decision_amounts(decision, day, canal_limit, pump_limit):
 def record_irrigation_decision(field_id: str, irrigation_date: date, decision: IrrigationDecision):
     with connect() as connection:
         point = location(connection, field_id)
-    forecast_data = weather.forecast(weather.point_query(*weather_coordinates(point)))
+    forecast_data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(point)), refresh=True)
     scenario = Scenario()
     with connect() as connection:
         require(connection.execute("SELECT id FROM fields WHERE id = %s AND archived_at IS NULL FOR UPDATE",
@@ -271,49 +316,12 @@ def record_irrigation_decision(field_id: str, irrigation_date: date, decision: I
 
 @router.post("/{field_id}/intelligence")
 def farming_intelligence(field_id: str, scenario: Scenario):
-    if os.getenv("ASSISTANT_ENABLED", "0") == "1":
-        result = simulate(field_id, scenario)
-        return {
-            "model": "AquaProof scientific engine",
-            "explanation": "The plan ranks strategies by crop stress and then pumping cost. The daily amounts, costs, and water constraints are listed in the calculation below.",
-            "result": result,
-        }
-    base_url, model = os.getenv("OPENAI_BASE_URL"), os.getenv("OPENAI_MODEL")
-    if not base_url or not model:
-        raise HTTPException(503, "Configure a farming intelligence model endpoint to generate an explanation")
     result = simulate(field_id, scenario)
-    strategy = result["recommended"]
-    context = {
-        "crop": result["crop"],
-        "planted": result["planted"],
-        "recommended": strategy,
-        "readily_available_mm": result["readily_available_mm"],
-        "weather_source": result["weather_source"],
-        "scenario": scenario.model_dump(),
-        "plan": result["plans"][strategy],
-        "strategy_comparison": {
-            label: {key: plan[key] for key in ("cost_pkr", "stress_score")}
-            for label, plan in result["plans"].items()
-        },
+    return {
+        "model": "AquaProof scientific engine",
+        "explanation": (
+            "The model compares crop water stress and pumping costs under the selected scenario. "
+            "Daily volumes and costs use the field inputs and forecast shown below."
+        ),
+        "result": result,
     }
-    key = os.getenv("OPENAI_API_KEY")
-    try:
-        response = httpx.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {key}"} if key else {},
-            timeout=40,
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "Explain the supplied irrigation plan for an agricultural officer. Use only the supplied observations and modeled scenario. State the recommended timing, water amounts, pumping cost and risks. Distinguish forecast and scenario inputs. Do not invent field observations, instructions, dates or estimates."},
-                    {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
-                ],
-            },
-        )
-        response.raise_for_status()
-        explanation = response.json()["choices"][0]["message"]["content"]
-        if not isinstance(explanation, str) or not explanation.strip():
-            raise ValueError("Empty model response")
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as error:
-        raise HTTPException(502, "The farming intelligence model could not explain this plan.") from error
-    return {"model": model, "explanation": explanation.strip(), "result": result}

@@ -1,0 +1,16 @@
+# Scientific model rules
+
+- Keep planting dates as officer-entered agricultural records. The lifecycle uses the PI-Advisor stage lengths and a daily calendar. Modeled maturity is the first date after the modeled late stage. It is an estimate and requires local cultivar review. No harvest date is guaranteed.
+- Potential daily ET uses forecast reference ET and stage-dependent basal crop and surface evaporation coefficients. The plan solves a root-zone water balance constrained by available water, crop stage, canal roster, pump capacity and application efficiency. The optimizer first minimizes modeled water stress and unmet ET, then pumping cost and water use.
+- Gross water volume equals net depth in millimetres times area in square metres divided by 1,000 and application efficiency. Pump runtime equals gross pumped volume divided by measured flow. Cost equals runtime multiplied by the direct hourly rate, or energy usage per hour times the entered tariff or fuel price. Retain PKR and explicit units.
+- Treat rain multipliers, supply fractions, availability dates and runtime caps as scenario assumptions. Only the baseline supports saving decisions. Test no-rain sensitivity before automatic guidance. Weather layers from external providers are observations or model estimates as supplied and never become field measurements automatically.
+- Apply the 40 °C and 40 mm indicators as general screening. The current balance cannot model standing water or local drainage. A farmer-reported waterlogged condition is a separately sourced observation. Wheat, cotton and maize support an indicative screen against lab saturation-extract ECe. It does not estimate yield or change irrigation volume automatically.
+- The rice balance omits ponding, land preparation and seepage. Require officer review for automated advice. Generic thresholds and Punjab example sowing windows cannot establish variety-level suitability across Pakistan.
+
+## Sources
+
+- [PI-Advisor pinned implementation](https://github.com/wateraccounting/PI-Advisor/tree/18197955f9ad2f74da0a73de240ff448fa67c8dd) and [MIT notice](PI-Advisor-LICENSE.txt).
+- [FAO-56 crop evapotranspiration](https://www.fao.org/4/x0490e/x0490e00.htm) and [FAO CROPWAT](https://www.fao.org/land-water/resources/tools/software/cropwat/en). CROPWAT uses daily balance and published FAO crop-water methods. The original CROPWAT link supplied for the project returned HTTP 404.
+- [FAO salt tolerance data](https://www.fao.org/4/Y4263E/y4263e0e.htm). Indicative ECe thresholds used here are 6 dS/m for wheat, 7.7 for cotton and 1.7 for maize.
+- [Punjab Crop Reporting Service calendar](https://agripunjab.gov.pk/system/files/Crops%20Life%20Calendar2.pdf) and [Punjab maize HEIS manual](https://agripunjab.gov.pk/system/files/Maize-Cultivation-with-HEIS.pdf). The Punjab maize guide gives separate spring and Kharif sowing windows and a shorter typical duration than the generic crop model. The guide is a reference and the model coefficients remain generic.
+- [AquaCrop-OSPy](https://github.com/aquacropos/aquacrop) is available under [Apache 2.0](https://github.com/aquacropos/aquacrop/blob/master/LICENSE). Adding it would require cultivar, soil, field management, weather and local yield validation that the registry and QA evidence do not currently provide.

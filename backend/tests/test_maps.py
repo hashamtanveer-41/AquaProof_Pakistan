@@ -1,5 +1,6 @@
 from datetime import date
 from unittest import TestCase
+
 from app.registry import irrigation_status
 
 

@@ -1,11 +1,18 @@
 from datetime import UTC, datetime, timedelta
 from unittest import TestCase
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import httpx
+from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app import assistant_copy, assistant_farms, assistant_jobs, assistant_mail, assistant_model
+from app import (
+    assistant_copy,
+    assistant_farms,
+    assistant_jobs,
+    assistant_model,
+    green_api,
+)
 from app.assistant_access import officer_authorized
 from app.science.crops import local_today
 from app.science.irrigation import IrrigationSettings
@@ -49,6 +56,25 @@ class AssistantTest(TestCase):
         # The volume passed here is already gross and must not be divided by efficiency a second time.
         self.assertEqual(assistant_farms.pump_metrics(120, settings), {"hours": 2, "pkr": 300})
 
+    def test_provider_failure_is_retained_and_older_evidence_expires(self):
+        field = {"latitude": 30, "longitude": 71}
+        now = datetime.now(UTC)
+        current = {"time": now.isoformat(), "retrieved_at": now.isoformat()}
+        with (
+            patch.object(assistant_farms, "current_weather", return_value=current),
+            patch.object(assistant_farms, "field_weather_forecast",
+                         side_effect=HTTPException(502, "OpenWeather and Open-Meteo failed")),
+            patch.object(assistant_farms, "fresh_forecast", return_value=current),
+            patch.object(assistant_farms.weather, "agriculture",
+                         return_value={"source": "Open-Meteo", "retrieved_at": now.isoformat()}),
+        ):
+            evidence = assistant_farms.live_conditions(field)
+        self.assertIsNone(evidence["weather_forecast"])
+        self.assertIn("OpenWeather", evidence["weather_errors"]["weather_forecast"])
+        self.assertTrue(assistant_farms.delivery_evidence_is_current(evidence))
+        evidence["forecast"] = {**current, "retrieved_at": (now - timedelta(minutes=11)).isoformat()}
+        self.assertFalse(assistant_farms.delivery_evidence_is_current(evidence))
+
     def test_observation_requires_source_and_duration(self):
         with self.assertRaises(ValidationError):
             assistant_model.Observation.model_validate({
@@ -87,23 +113,45 @@ class AssistantTest(TestCase):
         self.assertIn("کھیت", assistant_copy.template(result.language, "clarify"))
         self.assertIn("Khet", assistant_copy.template("roman_ur", "clarify"))
 
-    def test_imap_adapter_passes_plain_text_to_the_verified_ingress(self):
-        raw = (
-            b"From: Farmer <farmer@example.com>\r\nMessage-ID: <inbound@example.com>\r\n"
-            b"Content-Type: text/plain; charset=utf-8\r\n\r\nPani ki report\r\n"
-        )
-        mailbox = MagicMock()
-        mailbox.select.return_value = ("OK", [])
-        mailbox.uid.side_effect = [("OK", [b"11"]), ("OK", [(b"11", raw)]), ("OK", [])]
+    def test_green_api_quoted_message_and_acknowledgement(self):
+        adapter = green_api.GreenAPI("https://api.green-api.com", "1234567890", "qa-only")
+        direct = {"chatId": "923000000001@c.us", "sender": "923000000001@c.us"}
+        message = {
+            "typeWebhook": "incomingMessageReceived", "instanceData": {"idInstance": 1234567890},
+            "idMessage": "qa-message", "senderData": direct,
+            "messageData": {"typeMessage": "quotedMessage", "extendedTextMessageData": {"text": "Pani?"},
+                            "quotedMessage": {"textMessage": "signed quote", "stanzaId": "original"}},
+        }
+        group = {**message, "senderData": {**direct, "chatId": "group@g.us"}}
+        def response(receipt, body):
+            return httpx.Response(200, json={"receiptId": receipt, "body": body})
+
         consume = Mock()
-        with (
-            patch.dict("os.environ", {"IMAP_HOST": "test", "IMAP_USERNAME": "test", "IMAP_PASSWORD": "test"}),
-            patch.object(assistant_mail.imaplib, "IMAP4_SSL") as connect,
-        ):
-            connect.return_value.__enter__.return_value = mailbox
-            assistant_mail.EmailTransport().receive(consume)
-        recipient, message_id, text = consume.call_args.args
-        self.assertEqual(recipient, "farmer@example.com")
-        self.assertEqual(message_id, "<inbound@example.com>")
-        self.assertEqual(text.strip(), "Pani ki report")
-        self.assertEqual(mailbox.uid.call_args.args[:3], ("store", b"11", "+FLAGS"))
+        with patch.object(green_api.httpx, "request", side_effect=[
+            response(10, group), httpx.Response(200, json={"result": True}),
+            response(11, message), httpx.Response(200, json={"result": True}),
+            httpx.Response(200, content=b"null"),
+        ]) as request:
+            adapter.receive(consume)
+            self.assertEqual([call.args[0] for call in request.call_args_list],
+                             ["GET", "DELETE", "GET", "DELETE", "GET"])
+        consume.assert_called_once_with("923000000001", "qa-message", "Pani?", "signed quote", "original")
+        id_only = {**message, "messageData": {
+            "typeMessage": "quotedMessage", "extendedTextMessageData": {"text": "بارش؟", "stanzaId": "original"},
+        }}
+        self.assertEqual(green_api.incoming_text(id_only, "1234567890"),
+                         ("923000000001", "qa-message", "بارش؟", None, "original"))
+        with patch.object(green_api.httpx, "request", return_value=response(11, message)) as request:
+            with self.assertRaises(RuntimeError):
+                adapter.receive(Mock(side_effect=RuntimeError))
+            request.assert_called_once()
+
+    def test_green_api_outbound_schema_and_unknown_delivery(self):
+        adapter = green_api.GreenAPI("https://api.green-api.com", "1234567890", "qa-only")
+        with patch.object(green_api.httpx, "request", return_value=httpx.Response(200, json={"idMessage": "out-1"})) as request:
+            self.assertEqual(adapter.send("923000000001", "Farm question"), "out-1")
+            self.assertEqual(request.call_args.kwargs["json"], {"chatId": "923000000001@c.us", "message": "Farm question"})
+        with patch.object(green_api.httpx, "request", side_effect=httpx.ReadTimeout("private URL")):
+            with self.assertRaisesRegex(green_api.ProviderError, "sendMessage timed out") as error:
+                adapter.send("923000000001", "Farm question")
+            self.assertNotIn("private URL", str(error.exception))

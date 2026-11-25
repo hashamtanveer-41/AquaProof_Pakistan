@@ -1,58 +1,42 @@
-import type { LayerSpecification, RasterSourceSpecification } from "maplibre-gl";
+import { mapServerRequest } from "@/domain/registry";
 
 export type Basemap = "street" | "satellite" | "hybrid";
+export type ArcGISConfig = {
+  browser_token: string | null;
+  digitization_authorized: boolean;
+  server_basemaps?: boolean;
+};
 
-const tiles = import.meta.env.VITE_SATELLITE_TILES?.trim();
-const credit = import.meta.env.VITE_SATELLITE_ATTRIBUTION?.trim();
-const license = import.meta.env.VITE_SATELLITE_LICENSE_URL?.trim();
-const maxZoom = Number(import.meta.env.VITE_SATELLITE_MAX_ZOOM || 19);
+const arcgisStyles: Record<Basemap, string> = {
+  street: "streets",
+  satellite: "imagery/standard",
+  hybrid: "imagery",
+};
 
-function publicUrl(value: string | undefined) {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
-  } catch {
-    return false;
+export function arcgisStyle(basemap: Basemap) {
+  return (
+    "https://basemapstyles-api.arcgis.com/arcgis/rest/services/styles/v2/styles/arcgis/" +
+    arcgisStyles[basemap]
+  );
+}
+
+export function arcgisRequest(url: string, token?: string | null) {
+  if (url.startsWith("/api/map/basemap-style/") || url.startsWith("/api/map/basemap-assets/")) {
+    return mapServerRequest(url);
   }
-}
-
-function escapeHtml(text: string) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-export const satelliteSource: RasterSourceSpecification | undefined =
-  tiles &&
-  credit &&
-  license &&
-  publicUrl(tiles) &&
-  publicUrl(license) &&
-  ["{z}", "{x}", "{y}"].every((part) => tiles.includes(part)) &&
-  Number.isInteger(maxZoom) &&
-  maxZoom >= 0 &&
-  maxZoom <= 24 &&
-  import.meta.env.VITE_SATELLITE_DIGITIZATION_AUTHORIZED === "true"
-    ? {
-        type: "raster",
-        tiles: [tiles],
-        tileSize: 256,
-        maxzoom: maxZoom,
-        attribution: `<a href="${escapeHtml(license)}" target="_blank" rel="noopener noreferrer">${escapeHtml(credit)}</a>`,
-      }
-    : undefined;
-
-const hybridSourceLayers = new Set([
-  "transportation",
-  "transportation_name",
-  "place",
-  "boundary",
-  "water_name",
-]);
-
-export function hybridLayer(layer: LayerSpecification) {
-  return "source-layer" in layer && hybridSourceLayers.has(layer["source-layer"] ?? "");
+  if (!token || !url.startsWith("https://")) return { url };
+  const target = new URL(url);
+  const trusted =
+    target.hostname === "basemapstyles-api.arcgis.com" ||
+    /^(?:ibasemaps|basemaps|static-map-tiles)(?:-api)?\.arcgis\.com$/.test(target.hostname);
+  if (
+    !trusted ||
+    target.port ||
+    target.username ||
+    target.password ||
+    target.searchParams.has("token")
+  ) {
+    return { url };
+  }
+  return { url: url + (target.search ? "&" : "?") + "token=" + encodeURIComponent(token) };
 }

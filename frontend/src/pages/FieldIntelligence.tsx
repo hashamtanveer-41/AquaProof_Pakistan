@@ -4,6 +4,7 @@ import { FieldSelect } from "@/components/FieldSelect";
 import type { Field, SelectField } from "@/domain/data";
 import { request } from "@/domain/registry";
 import { formatWeatherTime } from "@/domain/weather";
+import { CropLifecycle } from "@/features/irrigation/CropLifecycle";
 import {
   DailyWaterBalance,
   show,
@@ -19,10 +20,27 @@ type Settings = {
   surface_taw_mm: number;
   surface_raw_mm: number;
   initial_surface_depletion_mm: number;
+  soil_ece_ds_m: number | null;
   canal: { first_date: string; cycle_days: number; hours: number; flow_m3_hour: number } | null;
-  tubewell: { flow_m3_hour: number; hours_per_day: number; pkr_hour: number } | null;
+  tubewell: {
+    flow_m3_hour: number;
+    hours_per_day: number;
+    pkr_hour: number;
+    energy?: {
+      fuel: "electricity" | "diesel";
+      units_per_hour: number;
+      pkr_per_unit: number;
+    } | null;
+  } | null;
 };
-type Scenario = { rain_factor: number; canal_delay_days: number; pump_pkr_hour: number | null };
+type Scenario = {
+  rain_factor: number;
+  canal_delay_days: number;
+  pump_pkr_hour: number | null;
+  canal_supply_factor: number;
+  pump_available_from: string | null;
+  pump_hours_cap: number | null;
+};
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "The request failed.";
@@ -66,12 +84,11 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   const [settingsAttempt, setSettingsAttempt] = useState(0);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [scenarioStatus, setScenarioStatus] = useState("");
+  const [pumpFuel, setPumpFuel] = useState<"direct" | "electricity" | "diesel">("direct");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>();
   const [scenario, setScenario] = useState<Scenario>();
   const [decisionStatus, setDecisionStatus] = useState("");
-  const [explanation, setExplanation] = useState("");
-  const [explanationStatus, setExplanationStatus] = useState("");
   const canal = field.source.toLowerCase().includes("canal");
   const tubewell = field.source.toLowerCase().includes("tubewell");
   useEffect(() => {
@@ -80,6 +97,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
       .then((data) => {
         if (active) {
           setSettings(data);
+          setPumpFuel(data?.tubewell?.energy?.fuel ?? "direct");
           setSettingsStatus("");
         }
       })
@@ -94,11 +112,43 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     };
   }, [path, settingsAttempt]);
 
+  useEffect(() => {
+    if (!scenario || busy) return;
+    let controller: AbortController | undefined;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || controller) return;
+      controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(35_000)]);
+      void request<Result>(`${path}/simulate`, "POST", scenario, signal)
+        .then((fresh) => {
+          if (!signal.aborted) {
+            setResult(fresh);
+            setScenarioStatus("");
+          }
+        })
+        .catch((error) => {
+          if (!controller?.signal.aborted) {
+            setScenarioStatus(
+              "Forecast refresh failed. The last calculated plan is shown. " + errorText(error),
+            );
+          }
+        })
+        .finally(() => {
+          controller = undefined;
+        });
+    }, 300_000);
+    return () => {
+      window.clearInterval(timer);
+      controller?.abort();
+    };
+  }, [path, scenario, busy]);
+
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     const n = (key: string) => Number(values.get(key));
     const firstDate = String(values.get("canal_date") ?? "");
+    const salinity = String(values.get("soil_ece") ?? "");
     const data: Settings = {
       taw_mm: n("taw"),
       initial_depletion_mm: n("depletion"),
@@ -107,6 +157,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
       surface_taw_mm: n("surface_taw"),
       surface_raw_mm: n("surface_raw"),
       initial_surface_depletion_mm: n("surface_depletion"),
+      soil_ece_ds_m: salinity === "" ? null : Number(salinity),
       canal:
         canal && firstDate
           ? {
@@ -122,16 +173,25 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
               flow_m3_hour: n("pump_flow"),
               hours_per_day: n("pump_hours"),
               pkr_hour: n("pump_price"),
+              energy:
+                pumpFuel === "direct"
+                  ? null
+                  : {
+                      fuel: pumpFuel,
+                      units_per_hour: n("energy_units"),
+                      pkr_per_unit: n("energy_price"),
+                    },
             }
           : null,
     };
     setBusy(true);
     setSettingsStatus("");
     setResult(undefined);
+    setScenario(undefined);
     try {
       const measurement = String(values.get("measured_at") ?? "");
       const query = measurement
-        ? "?" + new URLSearchParams({ measured_at: new Date(measurement).toISOString() })
+        ? "?" + new URLSearchParams({ measured_at: new Date(measurement + "+05:00").toISOString() })
         : "";
       setSettings(await request<Settings>(`${path}/irrigation-settings${query}`, "PUT", data));
       setSettingsStatus("Irrigation settings saved.");
@@ -146,15 +206,18 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     const price = String(values.get("price"));
+    const hours = String(values.get("pump_cap"));
     const input: Scenario = {
       rain_factor: Number(values.get("rain")),
       canal_delay_days: Number(values.get("delay")),
       pump_pkr_hour: price === "" ? null : Number(price),
+      canal_supply_factor: Number(values.get("canal_fraction")) / 100,
+      pump_available_from: String(values.get("pump_from")) || null,
+      pump_hours_cap: hours === "" ? null : Number(hours),
     };
     setBusy(true);
     setResult(undefined);
-    setExplanation("");
-    setExplanationStatus("");
+    setScenario(undefined);
     setDecisionStatus("");
     setScenarioStatus("Running scenario…");
     try {
@@ -171,7 +234,6 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   async function decide(day: string, input: DecisionInput) {
     setBusy(true);
     setDecisionStatus("Recalculating the plan…");
-    setExplanation("");
     try {
       setResult(await request<Result>(`${path}/irrigation-decisions/${day}`, "PUT", input));
       setDecisionStatus("Decision saved and water balance recalculated.");
@@ -179,28 +241,6 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     } catch (error) {
       setDecisionStatus(errorText(error));
       return false;
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function explain() {
-    if (!scenario) return;
-    setBusy(true);
-    setResult(undefined);
-    setExplanation("");
-    setExplanationStatus("Generating explanation…");
-    try {
-      const data = await request<{ explanation: string; result: Result }>(
-        `${path}/intelligence`,
-        "POST",
-        scenario,
-      );
-      setResult(data.result);
-      setExplanation(data.explanation);
-      setExplanationStatus("");
-    } catch (error) {
-      setExplanationStatus(errorText(error));
     } finally {
       setBusy(false);
     }
@@ -259,7 +299,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
                 value={settings?.initial_surface_depletion_mm}
               />
               <label>
-                Soil-water measurement time (local)
+                Soil-water measurement time (PKT)
                 <input name="measured_at" type="datetime-local" />
                 <small>
                   {settings?.measured_at
@@ -267,6 +307,13 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
                     : "Record this when measuring depletion for automatic advisories."}
                 </small>
               </label>
+              <Numeric
+                name="soil_ece"
+                label="Lab root-zone soil salinity ECe (dS/m)"
+                value={settings?.soil_ece_ds_m ?? undefined}
+                max={100}
+                required={false}
+              />
             </div>
             {canal && (
               <fieldset className="form-grid">
@@ -314,12 +361,62 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
                   max={24}
                   required={false}
                 />
-                <Numeric
-                  name="pump_price"
-                  label="Running cost (PKR/hour)"
-                  value={settings?.tubewell?.pkr_hour}
-                  required={false}
-                />
+                <label>
+                  Pumping cost basis
+                  <select
+                    value={pumpFuel}
+                    onChange={(event) => setPumpFuel(event.target.value as typeof pumpFuel)}
+                  >
+                    <option value="direct">Direct hourly rate</option>
+                    <option value="electricity">Electricity</option>
+                    <option value="diesel">Diesel</option>
+                  </select>
+                </label>
+                {pumpFuel === "direct" ? (
+                  <Numeric
+                    name="pump_price"
+                    label="Running cost (PKR/hour)"
+                    value={settings?.tubewell?.pkr_hour}
+                    required={false}
+                  />
+                ) : (
+                  <>
+                    <Numeric
+                      name="energy_units"
+                      key={pumpFuel}
+                      label={
+                        pumpFuel === "diesel"
+                          ? "Diesel use (litres/hour)"
+                          : "Electricity use (kWh/hour)"
+                      }
+                      min={0.001}
+                      max={10_000}
+                      value={
+                        settings?.tubewell?.energy?.fuel === pumpFuel
+                          ? settings.tubewell.energy.units_per_hour
+                          : undefined
+                      }
+                    />
+                    <Numeric
+                      name="energy_price"
+                      key={pumpFuel + "price"}
+                      label={
+                        pumpFuel === "diesel"
+                          ? "Diesel price (PKR/litre)"
+                          : "Electricity tariff (PKR/kWh)"
+                      }
+                      max={100_000}
+                      value={
+                        settings?.tubewell?.energy?.fuel === pumpFuel
+                          ? settings.tubewell.energy.pkr_per_unit
+                          : undefined
+                      }
+                    />
+                  </>
+                )}
+                {settings?.tubewell && (
+                  <small>Saved pumping cost {show(settings.tubewell.pkr_hour)} PKR/hour</small>
+                )}
               </fieldset>
             )}
             <Button type="submit" disabled={busy}>
@@ -340,30 +437,56 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
           </Button>
         )}
       </Card>
+      <CropLifecycle path={path} />
       <Card
-        title="PI-Advisor irrigation planner"
+        title="Irrigation scenarios"
         subtitle={`${field.crop} · ${field.stage} · Uses available forecast days`}
       >
         <p>
-          Run the baseline with the values below, or vary rainfall, canal timing, and pumping cost
-          to compare outcomes.
+          Compare crop water balance and pumping cost using the forecast and field measurements.
         </p>
         <form className="form-grid" onSubmit={run}>
           <Numeric name="rain" label="Forecast rainfall multiplier" value={1} max={3} />
           <Numeric name="delay" label="Canal delay (days)" value={0} max={60} step={1} />
+          <Numeric
+            name="canal_fraction"
+            label="Available canal allocation (%)"
+            value={100}
+            max={100}
+          />
+          <label>
+            Tubewell available from
+            <input name="pump_from" type="date" />
+          </label>
+          <Numeric name="pump_cap" label="Tubewell limit (hours/day)" max={24} required={false} />
           <Numeric name="price" label="Override pumping cost (PKR/hour)" required={false} />
           <Button type="submit" variant="primary" disabled={busy || !settings}>
             Run scenario
           </Button>
         </form>
         {scenarioStatus && <p role="status">{scenarioStatus}</p>}
-        {explanationStatus && <p role="status">{explanationStatus}</p>}
       </Card>
       {result && (
         <Card
           title={`Recommended plan · ${result.recommended}`}
           subtitle={`${result.weather_source} forecast retrieved ${formatWeatherTime(result.weather_retrieved_at)} PKT · Readily available water ${show(result.readily_available_mm)} mm`}
         >
+          {result.weather_fallback_reason && (
+            <p>Weather fallback · {result.weather_fallback_reason}</p>
+          )}
+          {result.soil_inputs_source && (
+            <p>
+              {result.soil_inputs_source} ·{" "}
+              {result.soil_measured_at
+                ? `Measurement recorded ${formatWeatherTime(result.soil_measured_at)} PKT`
+                : "Measurement time unrecorded"}
+            </p>
+          )}
+          {result.warnings.map((warning) => (
+            <p role="status" key={warning}>
+              {warning}
+            </p>
+          ))}
           <div className="table-scroll">
             <table>
               <thead>
@@ -389,17 +512,17 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
             busy={busy}
             canReview={Boolean(
               scenario &&
+              !scenarioStatus &&
               scenario.rain_factor === 1 &&
               scenario.canal_delay_days === 0 &&
-              scenario.pump_pkr_hour == null,
+              scenario.pump_pkr_hour == null &&
+              scenario.canal_supply_factor === 1 &&
+              scenario.pump_available_from == null &&
+              scenario.pump_hours_cap == null,
             )}
             onDecision={decide}
           />
           {decisionStatus && <p role="status">{decisionStatus}</p>}
-          <Button onClick={() => void explain()} disabled={busy}>
-            Explain this plan with AI
-          </Button>
-          {explanation && <p style={{ whiteSpace: "pre-wrap" }}>{explanation}</p>}
         </Card>
       )}
     </>

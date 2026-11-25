@@ -1,2 +1,11 @@
 .idea/
 .env
+.env.*
+!.env.example
+.qa/
+.uv-cache/
+.uv-python/
+.pnpm-store/
+.ruff_cache/
+.venv*/
+__pycache__/

@@ -45,6 +45,8 @@ export default function Profile({
                 ["Email", farmer.email || "Not provided"],
                 ["Phone", farmer.phone || "Not provided"],
                 ["Region", farmer.region],
+                ["District", farmer.district ?? "Unrecorded"],
+                ["Tehsil", farmer.tehsil ?? "Unrecorded"],
                 ["Village", farmer.village],
                 ["Total mapped area", `${acres(plots.reduce((sum, f) => sum + f.acres, 0))} ac`],
               ]}

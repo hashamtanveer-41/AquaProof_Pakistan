@@ -1,11 +1,17 @@
 import type { Farmer, Field, Point } from "./data";
 
 const api = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-export const connected = true;
 let officerToken = "";
 
 export function setOfficerToken(token: string) {
   officerToken = token.trim();
+}
+
+export function mapServerRequest(path: string) {
+  return {
+    url: `${api}${path}`,
+    ...(officerToken && { headers: { Authorization: `Bearer ${officerToken}` } }),
+  };
 }
 
 export class ApiError extends Error {
@@ -19,7 +25,7 @@ export class ApiError extends Error {
 
 type Boundary = { type: "Polygon"; coordinates: Point[][] };
 type Season = { id: number; crop: string; variety: string | null; planted: string | null };
-type SavedField = Omit<Field, "points" | "crop" | "previous" | "planted" | "rate"> & {
+type SavedField = Omit<Field, "points" | "crop" | "previous" | "planted"> & {
   boundary: Boundary;
   seasons: Season[];
 };
@@ -30,14 +36,13 @@ export function polygon(points: Point[]): Boundary {
   return { type: "Polygon", coordinates: [[...points, points[0]]] };
 }
 
-export function toField({ boundary, seasons, history, ...base }: SavedField): Field {
+function toField({ boundary, seasons, history, ...base }: SavedField): Field {
   return {
     ...base,
     points: boundary.coordinates[0].slice(0, -1),
     crop: seasons[0]?.crop ?? "Not recorded",
     previous: seasons[1]?.crop ?? "Not recorded",
     planted: seasons[0]?.planted ?? "Not recorded",
-    rate: 0,
     history: [
       ...history,
       ...seasons.flatMap(({ crop, planted }) =>
@@ -89,17 +94,13 @@ export async function loadRegistry(signal?: AbortSignal) {
   return { farmers: data.farmers, fields: data.fields.map(toField) };
 }
 
-export async function fetchField(id: string) {
-  return toField(await request<SavedField>(`/fields/${encodeURIComponent(id)}`));
-}
-
 export async function registerFarmer(owner: Farmer, field?: FieldDetails & { boundary: Boundary }) {
-  const { id, ...farmer } = owner;
+  const { id, email, ...farmer } = owner;
   const result = await request<{ farmer: Farmer; field: SavedField | null }>(
     "/registrations",
     "POST",
     {
-      ...(id ? { farmer_id: id } : { farmer }),
+      ...(id ? { farmer_id: id } : { farmer: { ...farmer, email: email || undefined } }),
       field,
     },
   );
