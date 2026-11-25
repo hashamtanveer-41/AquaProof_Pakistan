@@ -1,5 +1,10 @@
 node_modules/
+.next/
+out/
 dist/
 .env*
-*.local
-*.tsbuildinfo
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Next.js auto-generated (not for version control)
+AGENTS.md

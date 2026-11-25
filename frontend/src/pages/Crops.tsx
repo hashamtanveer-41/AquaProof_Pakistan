@@ -1,7 +1,9 @@
+"use client";
+
 import { useState } from "react";
 import { acres, regionData } from "@/domain/data";
 import type { Field, Region, SelectField } from "@/domain/data";
-import { Card, Chip, Demo, Empty, PageTitle, TextAction } from "@/components/ui";
+import { Button, Card, Chip, Demo, Empty, Notice, PageTitle, TextAction } from "@/components/ui";
 import { connected, startSeason } from "@/domain/registry";
 
 export default function Crops({
@@ -83,10 +85,10 @@ export default function Crops({
               Planting date
               <input name="planted" type="date" required />
             </label>
-            <button className="button" disabled={saving}>
+            <Button type="submit" variant="primary" disabled={saving}>
               Save season
-            </button>
-            {status && <p role="status">{status}</p>}
+            </Button>
+            {status && <Notice role="status">{status}</Notice>}
           </form>
         </Card>
       )}

@@ -1,3 +1,5 @@
+"use client";
+
 import { useState } from "react";
 import { CloudRain, Droplets, Sun, Wind } from "lucide-react";
 import { forecastDays, localWeather } from "@/domain/data";

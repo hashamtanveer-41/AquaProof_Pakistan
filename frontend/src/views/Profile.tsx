@@ -1,3 +1,5 @@
+"use client";
+
 import { ArrowLeft, ArrowRight, Droplets, Sprout } from "lucide-react";
 import { acres, pkr, regionData } from "@/domain/data";
 import type { Farmer, Field, Page, SelectField } from "@/domain/data";

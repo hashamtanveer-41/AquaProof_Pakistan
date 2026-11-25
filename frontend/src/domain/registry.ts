@@ -1,7 +1,6 @@
 import type { Farmer, Field, Point } from "./data";
 
-const apiUrl = import.meta.env.VITE_API_URL;
-const api = apiUrl?.replace(/\/$/, "");
+const apiUrl = process.env.NEXT_PUBLIC_API_URL;
 export const connected = Boolean(apiUrl);
 
 type Boundary = { type: "Polygon"; coordinates: Point[][] };
@@ -36,7 +35,7 @@ export function toField({ boundary, seasons, history, ...base }: SavedField): Fi
 }
 
 export async function request<T>(path: string, method = "GET", data?: unknown): Promise<T> {
-  const response = await fetch(`${api}/api${path}`, {
+  const response = await fetch(`/api${path}`, {
     method,
     headers: data === undefined ? undefined : { "Content-Type": "application/json" },
     body: data === undefined ? undefined : JSON.stringify(data),
@@ -78,7 +77,9 @@ export async function registerFarmer(owner: Farmer, field?: FieldDetails & { bou
 }
 
 export async function updateBoundary(id: string, points: Point[]) {
-  return toField(await request<SavedField>(`/fields/${id}`, "PATCH", polygon(points)));
+  return toField(
+    await request<SavedField>(`/fields/${encodeURIComponent(id)}`, "PATCH", polygon(points)),
+  );
 }
 
 export async function startSeason(id: string, crop: string, variety: string, planted: string) {

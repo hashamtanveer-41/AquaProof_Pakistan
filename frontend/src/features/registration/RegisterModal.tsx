@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, MapPin, UserRoundPlus, X } from "lucide-react";
 import { acres, measure, regionData, regions } from "@/domain/data";

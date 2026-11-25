@@ -1,4 +1,7 @@
-import { lazy, Suspense, useRef, useState } from "react";
+"use client";
+
+import dynamic from "next/dynamic";
+import { useRef, useState } from "react";
 import { connected } from "@/domain/registry";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
@@ -26,26 +29,21 @@ const center = (pts: Point[]): Point => [
   pts.reduce((sum, p) => sum + p[1], 0) / pts.length,
 ];
 
-const LiveMap = lazy(() => import("./LiveMap"));
+const LiveMap = dynamic(() => import("./LiveMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="geo-canvas" role="status">
+      Loading map…
+    </div>
+  ),
+});
 
 export function GeoCanvas(
   props: Parameters<typeof DemoCanvas>[0] & {
     onDraftChange?: (points: Point[]) => void;
   },
 ) {
-  return connected ? (
-    <Suspense
-      fallback={
-        <div className="geo-canvas" role="status">
-          Loading map…
-        </div>
-      }
-    >
-      <LiveMap key={props.region} {...props} />
-    </Suspense>
-  ) : (
-    <DemoCanvas {...props} />
-  );
+  return connected ? <LiveMap key={props.region} {...props} /> : <DemoCanvas {...props} />;
 }
 
 function DemoCanvas({
@@ -267,6 +265,7 @@ function DemoCanvas({
             const [x, y] = center(field.points);
             return (
               <button
+                type="button"
                 key={field.id}
                 className={`field-pin ${selected === field.id ? "selected" : ""} ${weather ? "weather-pin" : ""}`}
                 style={{ left: `${x / 10}%`, top: `${y / 6}%` }}
@@ -291,6 +290,7 @@ function DemoCanvas({
         <div className="map-toolstack">
           <div className="map-toolgroup">
             <button
+              type="button"
               className={tool === "pointer" && !draft ? "active" : ""}
               onClick={() => onTool("pointer")}
               title="Select field"
@@ -299,6 +299,7 @@ function DemoCanvas({
               <MousePointer2 size={16} />
             </button>
             <button
+              type="button"
               className={tool === "pan" && !draft ? "active" : ""}
               onClick={() => {
                 if (zoom === 1 && !draft) changeZoom(0.3);
@@ -310,6 +311,7 @@ function DemoCanvas({
               <Hand size={17} />
             </button>
             <button
+              type="button"
               className={draft ? "active" : ""}
               onClick={() => onTool("draw")}
               title="Draw boundary"
@@ -321,6 +323,7 @@ function DemoCanvas({
           {draft && (
             <div className="map-toolgroup">
               <button
+                type="button"
                 onClick={onUndo}
                 disabled={!draft.length}
                 title="Undo point"
@@ -329,6 +332,7 @@ function DemoCanvas({
                 <Undo2 size={16} />
               </button>
               <button
+                type="button"
                 disabled={!draft.length}
                 onClick={onClear}
                 title={activePoint == null ? "Clear points" : "Delete selected point"}
@@ -343,6 +347,7 @@ function DemoCanvas({
       <div className="map-right-tools">
         <div className="map-toolgroup">
           <button
+            type="button"
             onClick={() => changeZoom(0.3)}
             disabled={zoom >= 3}
             aria-label="Zoom in"
@@ -351,6 +356,7 @@ function DemoCanvas({
             <Plus size={18} />
           </button>
           <button
+            type="button"
             onClick={() => changeZoom(-0.3)}
             disabled={zoom <= 1}
             aria-label="Zoom out"
@@ -361,6 +367,7 @@ function DemoCanvas({
         </div>
         <div className="map-toolgroup">
           <button
+            type="button"
             onClick={() => {
               setPan({ x: 0, y: 0 });
               setZoom(1);
@@ -372,6 +379,7 @@ function DemoCanvas({
           </button>
           {setFull && (
             <button
+              type="button"
               onClick={() => setFull(!full)}
               title={full ? "Exit expanded map" : "Expand map"}
               aria-label={full ? "Exit expanded map" : "Expand map"}
@@ -423,7 +431,7 @@ function DemoCanvas({
       </div>
       <span className="map-attribution">
         Illustrative {satellite ? "satellite imagery" : "street layer"}{" "}
-        <button onClick={() => setHelp(!help)} aria-label="Map help">
+        <button type="button" onClick={() => setHelp(!help)} aria-label="Map help">
           <CircleHelp size={12} />
         </button>
       </span>

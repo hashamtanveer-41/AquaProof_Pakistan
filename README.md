@@ -5,10 +5,10 @@
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000.svg?logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![React](https://img.shields.io/badge/React-19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-38B2AC.svg?logo=tailwind-css&logoColor=white)](https://tailwindcss.com)
-[![Vite](https://img.shields.io/badge/Vite-6.0-646CFF.svg?logo=vite&logoColor=white)](https://vitejs.dev)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-PostGIS-4169E1.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-API-412991.svg?logo=openai&logoColor=white)](https://platform.openai.com)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com)
@@ -27,7 +27,7 @@
 - [Getting Started](#-getting-started)
   - [Prerequisites](#prerequisites)
   - [Backend Setup (FastAPI)](#backend-setup-fastapi)
-  - [Frontend Setup (React + Vite)](#frontend-setup-react--vite)
+  - [Frontend Setup (Next.js)](#frontend-setup-nextjs)
   - [Email Testing with Mailpit](#email-testing-with-mailpit)
 - [API Reference](#-api-reference)
 - [Testing & Quality Assurance](#-testing--quality-assurance)
@@ -98,7 +98,7 @@ flowchart TD
     Officer([Government Officer / Browser])
     Farmer([Farmer / Email])
 
-    subgraph Frontend ["Frontend (React 19 + Vite + MapLibre)"]
+    subgraph Frontend ["Frontend (Next.js App Router + MapLibre)"]
         Dashboard[Officer Dashboard]
         MapEditor[Farm Map & Polygon Editor]
         WeatherPanel[Weather & Crop Panel]
@@ -180,19 +180,19 @@ The tree below describes the target layout. The implemented backend uses app/reg
 ```text
 aquaproof-pakistan/
 │
-├── frontend/              # React + Vite + TypeScript
+├── frontend/              # Next.js App Router + TypeScript
 │   ├── public/          # Branding and demo satellite imagery
 │   ├── src/
-│   │   ├── app/         # Dashboard shell, navigation, and state
-│   │   ├── pages/       # Dashboard views
+│   │   ├── app/         # App Router pages and layouts
+│   │   ├── components/  # Shared UI shell and components
+│   │   ├── context/     # Workspace state provider
+│   │   ├── views/       # Dashboard view components
 │   │   ├── features/    # Map and registration workflows
-│   │   ├── components/  # Shared UI components
-│   │   ├── domain/      # Demo data and irrigation calculations
-│   │   ├── styles/      # Global dashboard styles
-│   │   └── main.tsx     # React entry point
+│   │   ├── domain/      # Demo data, routing, and API client
+│   │   └── styles/      # Global dashboard styles
+│   ├── next.config.ts
 │   ├── package.json
-│   ├── pnpm-lock.yaml
-│   └── vite.config.ts
+│   └── pnpm-lock.yaml
 │
 ├── backend/                         # Python 3.12+ / FastAPI
 │   ├── app/
@@ -272,18 +272,18 @@ docker compose up -d --build
 
 Compose applies SQL migrations on startup and stores records in a named volume. Open the [connected dashboard](http://localhost:8080), [API documentation](http://localhost:8000/docs), or [service health](http://localhost:8000/health).
 
-### Frontend Setup (React + Vite)
+### Frontend Setup (Next.js)
 
-Use Vite for local frontend development. Install the dependencies and set the API URL before starting Vite. In PowerShell:
+Use Next.js for local frontend development. Install the dependencies and set the API URL before starting the dev server. In PowerShell:
 
 ```powershell
 cd frontend
 pnpm install --frozen-lockfile
-$env:VITE_API_URL = 'http://127.0.0.1:8000'
+$env:NEXT_PUBLIC_API_URL = 'http://127.0.0.1:8000'
 pnpm dev
 ```
 
-In Bash, set the variable with `export VITE_API_URL=http://127.0.0.1:8000`. With the variable unset, the frontend runs its standalone demo. The connected registry starts empty and loads data from the API. The map uses MapLibre GL JS and Terra Draw with an attributed OpenStreetMap basemap. Set `VITE_MAP_TILES` to a compatible raster tile URL template to use another provider.
+In Bash, set the variable with `export NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`. With the variable unset, the frontend runs its standalone demo. Next.js rewrites `/api/*` requests to `API_INTERNAL_URL` (or `NEXT_PUBLIC_API_URL`, defaulting to `http://127.0.0.1:8000`). The connected registry starts empty and loads data from the API. The map uses MapLibre GL JS and Terra Draw with an attributed OpenStreetMap basemap. Set `NEXT_PUBLIC_MAP_TILES` to a compatible raster tile URL template to use another provider.
 
 ### Email Testing with Mailpit
 
