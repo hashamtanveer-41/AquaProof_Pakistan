@@ -1,5 +1,7 @@
+"use client";
+
 import { useEffect, useState } from "react";
-import { Card, Empty, PageTitle } from "@/components/ui";
+import { Button, Card, Empty, Notice, PageTitle } from "@/components/ui";
 import type { Field } from "@/domain/data";
 import { fetchField, request } from "@/domain/registry";
 
@@ -137,10 +139,10 @@ export default function LiveAdvisory({
                 Message
                 <textarea name="body" rows={5} required maxLength={8000} />
               </label>
-              <button className="button" disabled={busy}>
+              <Button type="submit" variant="primary" disabled={busy}>
                 Approve and queue
-              </button>
-              {status && <p role="status">{status}</p>}
+              </Button>
+              {status && <Notice role="status">{status}</Notice>}
             </form>
           </Card>
           <Card title="Conversation history">

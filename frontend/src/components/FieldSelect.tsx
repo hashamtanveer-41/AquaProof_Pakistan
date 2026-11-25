@@ -1,3 +1,5 @@
+"use client";
+
 import { Sprout } from "lucide-react";
 import { regionData } from "@/domain/data";
 import type { Field } from "@/domain/data";

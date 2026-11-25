@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useRef, useState } from "react";
 import {
   LngLatBounds,
@@ -6,7 +8,6 @@ import {
   setWorkerUrl,
   type GeoJSONSource,
 } from "maplibre-gl";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from "terra-draw";
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -18,7 +19,10 @@ const centers: Record<Region, Point> = {
   "Khyber Pakhtunkhwa": [72.0404, 34.1986],
 };
 const empty = { type: "FeatureCollection" as const, features: [] };
-setWorkerUrl(workerUrl);
+
+if (typeof window !== "undefined") {
+  setWorkerUrl(new URL("maplibre-gl/dist/maplibre-gl-worker.mjs", import.meta.url).toString());
+}
 
 export default function LiveMap({
   region,
@@ -59,7 +63,8 @@ export default function LiveMap({
             streets: {
               type: "raster",
               tiles: [
-                import.meta.env.VITE_MAP_TILES || "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                process.env.NEXT_PUBLIC_MAP_TILES ||
+                  "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
               ],
               tileSize: 256,
               maxzoom: 19,

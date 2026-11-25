@@ -1,3 +1,5 @@
+"use client";
+
 import { useMemo, useState } from "react";
 import { ArrowDownToLine, CalendarDays, Droplets, Wallet } from "lucide-react";
 import { number, pkr, regionData, regions } from "@/domain/data";

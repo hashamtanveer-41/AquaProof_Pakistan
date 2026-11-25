@@ -1,3 +1,5 @@
+"use client";
+
 import type { ReactNode } from "react";
 import { ArrowRight, Droplet, FlaskConical, Sprout } from "lucide-react";
 
@@ -24,15 +26,23 @@ export function Button({
   variant = "outline",
   type = "button",
   disabled = false,
+  className = "",
 }: {
   children: ReactNode;
   onClick?: () => void;
-  variant?: string;
-  type?: "button" | "submit";
+  variant?: "outline" | "primary";
+  type?: "button" | "submit" | "reset";
   disabled?: boolean;
+  className?: string;
 }) {
+  const variantClass = variant === "primary" ? "primary" : "";
   return (
-    <button type={type} onClick={onClick} disabled={disabled} className={`button ${variant}`}>
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`button ${variantClass} ${className}`.trim()}
+    >
       {children}
     </button>
   );
@@ -44,7 +54,7 @@ export function Chip({
   dot = false,
 }: {
   children: ReactNode;
-  tone?: string;
+  tone?: "green" | "neutral" | "amber" | "blue";
   dot?: boolean;
 }) {
   return (
@@ -61,6 +71,26 @@ export function Demo({ children = "Demo data" }: { children?: ReactNode }) {
       <FlaskConical size={12} />
       {children}
     </Chip>
+  );
+}
+
+export function Notice({
+  icon,
+  children,
+  tone = "default",
+  role,
+}: {
+  icon?: ReactNode;
+  children: ReactNode;
+  tone?: "default" | "error" | "weather";
+  role?: "status" | "alert";
+}) {
+  const toneClass = tone === "error" ? "error" : tone === "weather" ? "weather-conversation" : "";
+  return (
+    <div className={`notice ${toneClass}`.trim()} role={role}>
+      {icon}
+      <span>{children}</span>
+    </div>
   );
 }
 
@@ -98,11 +128,11 @@ export function Stat({
   value: ReactNode;
   label: string;
   note?: string;
-  tone?: string;
+  tone?: "" | "blue" | "amber";
 }) {
   return (
     <div className="stat card">
-      <div className={`stat-icon ${tone}`}>{icon}</div>
+      <div className={`stat-icon ${tone}`.trim()}>{icon}</div>
       <div>
         <div className="stat-label">{label}</div>
         <div className="stat-value">{value}</div>
@@ -126,7 +156,7 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={`card surface ${className}`}>
+    <section className={`card surface ${className}`.trim()}>
       {title && (
         <header className="section-head">
           <div>
@@ -175,9 +205,17 @@ export function Details({ rows }: { rows: [string, ReactNode][] }) {
   );
 }
 
-export function TextAction({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+export function TextAction({
+  children,
+  onClick,
+  disabled = false,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <button className="text-action" onClick={onClick}>
+    <button type="button" className="text-action" onClick={onClick} disabled={disabled}>
       {children}
       <ArrowRight size={15} />
     </button>

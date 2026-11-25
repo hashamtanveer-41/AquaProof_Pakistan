@@ -1,3 +1,5 @@
+"use client";
+
 import { CloudRain, Droplets, History, MapPin, Sprout, Users, Wallet } from "lucide-react";
 import { acres, forecastDays, pkr, regionData } from "@/domain/data";
 import type { Farmer, Field, Page, Region, SelectField } from "@/domain/data";

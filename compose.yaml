@@ -3,7 +3,9 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_MAP_TILES: ${VITE_MAP_TILES:-}
+        NEXT_PUBLIC_API_URL: /
+        NEXT_PUBLIC_MAP_TILES: ${NEXT_PUBLIC_MAP_TILES:-}
+        API_INTERNAL_URL: http://api:8000
     ports:
       - "127.0.0.1:8080:80"
     depends_on:

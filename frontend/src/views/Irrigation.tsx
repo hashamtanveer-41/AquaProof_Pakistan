@@ -1,3 +1,5 @@
+"use client";
+
 import { useState } from "react";
 import { Droplets, FlaskConical, Play, SlidersHorizontal, Sprout, Sun, Waves } from "lucide-react";
 import { acres, forecastDays, localWeather, number, pkr } from "@/domain/data";
