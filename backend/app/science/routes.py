@@ -26,6 +26,13 @@ from .irrigation import (
     optimize,
     salinity_screen,
 )
+from .progress import (
+    harvest_window,
+    next_irrigation_date,
+    season_progress,
+    stage_water,
+    water_now,
+)
 
 router = APIRouter(prefix="/api/fields", tags=["weather and irrigation"])
 locations = APIRouter(prefix="/api", tags=["locations"])
@@ -54,6 +61,122 @@ def crop_lifecycle(field_id: str):
     return {"status": "modeled", "variety": season["variety"], "season_id": season["id"],
             "regional_reference": regional_reference(field["region"], crop),
             **lifecycle(crop, date.fromisoformat(season["planted"]), local_today())}
+
+
+def modeled_season(field):
+    """Return (season, calendar crop name) or a status dict when it cannot be modeled."""
+    season = next(iter(field["seasons"]), None)
+    if not season or not season["planted"]:
+        return None, {"status": "planting_date_required"}
+    crop = CROP_NAMES.get(season["crop"].casefold())
+    if not crop:
+        return None, {"status": "calendar_unavailable"}
+    return (season, crop), None
+
+
+@router.get("/{field_id}/crop-progress")
+def crop_progress(field_id: str):
+    with connect() as connection:
+        field = field_by_id(connection, field_id)
+    resolved, status = modeled_season(field)
+    if status:
+        return status
+    season, crop = resolved
+    planted = date.fromisoformat(season["planted"])
+    return {
+        "status": "modeled", "field_id": field_id, "crop": crop, "variety": season["variety"],
+        "season_id": season["id"], "planting_date": planted, "as_of": local_today(),
+        "regional_reference": regional_reference(field["region"], crop),
+        **season_progress(crop, planted, CROPS[crop]["lengths"], local_today()),
+    }
+
+
+@router.get("/{field_id}/harvest-window")
+def harvest(field_id: str):
+    with connect() as connection:
+        field = field_by_id(connection, field_id)
+        point = location(connection, field_id)
+    resolved, status = modeled_season(field)
+    if status:
+        return status
+    season, crop = resolved
+    planted = date.fromisoformat(season["planted"])
+    # Open-Meteo gives complete local-day rainfall and daily rain probability. OpenWeather's
+    # partial three-hour groups are not used for the harvest rain-risk decision.
+    forecast_data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(point)))
+    return {
+        "status": "modeled", "field_id": field_id, "crop": crop, "variety": season["variety"],
+        "planting_date": planted, "as_of": local_today(),
+        "weather_source": forecast_data["source"],
+        "weather_retrieved_at": forecast_data["retrieved_at"],
+        "weather_fallback_reason": forecast_data.get("fallback_reason"),
+        **harvest_window(crop, planted, CROPS[crop]["lengths"], local_today(), forecast_data["daily"]),
+    }
+
+
+AREA_M2_PER_ACRE = 4046.8564224
+
+
+@router.get("/{field_id}/water-plan")
+def water_plan(field_id: str):
+    with connect() as connection:
+        field = field_by_id(connection, field_id)
+        settings = read_settings(connection, field_id)
+        point = location(connection, field_id)
+    resolved, status = modeled_season(field)
+    # Ask for what is missing instead of guessing any water figure.
+    missing = []
+    if status:
+        missing.append("crop")
+    if not settings or not field.get("irrigation_measured_at"):
+        missing.append("measurements")
+    source = field["source"].casefold()
+    if settings and (("canal" in source and not settings.canal)
+                     or ("tubewell" in source and not settings.tubewell)):
+        missing.append("supply")
+    if missing:
+        return {"status": "input_required", "field_id": field_id, "missing": missing,
+                "guidance": "Record the crop and planting date, officer soil-water measurements, "
+                            "and the registered canal turn or tubewell flow before AquaProof estimates water."}
+
+    season, crop = resolved
+    planted = date.fromisoformat(season["planted"])
+    area_m2 = field["acres"] * AREA_M2_PER_ACRE
+    forecast_data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(point)))
+    daily = forecast_data["daily"]
+    active = [row for row in daily
+              if crop_stage(crop, planted, date.fromisoformat(row["date"])) not in
+              ("Pre-planting", "Beyond modeled season")]
+    if any(row["rain_mm"] is None or row["eto_mm"] is None for row in daily):
+        raise HTTPException(502, "The forecast did not include usable rainfall and reference ET")
+    if not active:
+        return {"status": "out_of_season", "field_id": field_id, "crop": crop,
+                "guidance": "The forecast horizon does not overlap the modeled crop season."}
+
+    result = optimize(daily, crop, planted, area_m2, settings, Scenario())
+    plan_days = result["plans"][result["recommended"]]["daily"]
+    first_active = next(day for day in plan_days if day["active_crop"])
+    reference_eto = round(sum(row["eto_mm"] for row in active) / len(active), 2)
+    flow = settings.tubewell.flow_m3_hour if settings.tubewell else None
+    pkr_hour = settings.tubewell.pkr_hour if settings.tubewell else None
+    progress = season_progress(crop, planted, CROPS[crop]["lengths"], local_today())
+    now = water_now(first_active, area_m2, settings.efficiency, flow, pkr_hour)
+    return {
+        "status": "ready", "field_id": field_id, "crop": crop, "planting_date": planted,
+        "as_of": local_today(), "area_m2": round(area_m2, 1), "efficiency": settings.efficiency,
+        "water_source": result["recommended"], "current_stage": progress["current_stage"],
+        "progress_pct": progress["progress_pct"],
+        "reference_eto_mm": {"value": reference_eto, "source": "forecast",
+                             "retrieved_at": forecast_data["retrieved_at"], "label": "forecast"},
+        "stages": stage_water(progress["stages"], crop, planted, area_m2,
+                              settings.efficiency, reference_eto, flow),
+        "water_now": now,
+        "next_irrigation_date": next_irrigation_date(plan_days),
+        "runtime_hours": now["runtime_hours"],
+        "weather_source": forecast_data["source"],
+        "weather_retrieved_at": forecast_data["retrieved_at"],
+        "soil_measured_at": field.get("irrigation_measured_at"),
+    }
 
 
 def location(connection, field_id):

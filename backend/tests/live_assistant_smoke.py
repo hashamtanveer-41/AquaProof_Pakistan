@@ -13,6 +13,7 @@ from app import assistant_farms, assistant_model
 from app.assistant_jobs import accept_message, process_one, signed_token
 from app.database import connect, migrate
 from app.main import app
+from app.officer_auth import password_hash
 from app.science.crops import local_today
 
 
@@ -104,13 +105,15 @@ def main():
     database = os.environ.get("AQUAPROOF_TEST_DATABASE_URL", "")
     if not urlsplit(database).path.startswith("/aquaproof_test"):
         raise SystemExit("Configure a dedicated disposable AQUAPROOF_TEST_DATABASE_URL.")
-    officer_secret = uuid4().hex
+    officer_password = uuid4().hex
     with patch.dict(os.environ, {
-        "DATABASE_URL": database, "ASSISTANT_ENABLED": "1", "ASSISTANT_OFFICER_TOKEN": officer_secret,
+        "DATABASE_URL": database, "ASSISTANT_ENABLED": "1",
+        "AQUAPROOF_OFFICER_PASSWORD_HASH": password_hash(officer_password), "AQUAPROOF_SESSION_SECRET": uuid4().hex,
         "ASSISTANT_REPLY_SECRET": uuid4().hex, "AQUAPROOF_BACKGROUND_WHATSAPP": "0", "AQUAPROOF_HEALTH_ENABLED": "0",
     }):
         migrate()
-        client = TestClient(app, headers={"Authorization": f"Bearer {officer_secret}"})
+        client = TestClient(app)
+        assert client.post("/api/auth/sign-in", json={"password": officer_password}).status_code == 200
         today = local_today()
         now = datetime.now(UTC).isoformat()
         forecast = {"source": "synthetic QA fixture", "retrieved_at": now, "daily": [

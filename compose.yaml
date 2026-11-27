@@ -5,7 +5,7 @@ services:
       args:
         VITE_MAP_TILES: ${VITE_MAP_TILES:-}
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:${AQUAPROOF_WEB_PORT:-8080}:80"
     depends_on:
       - api
   db:
@@ -26,14 +26,16 @@ services:
     command: ["sh", "-c", "python -m app.database && exec uvicorn app.main:app --host 0.0.0.0"]
     environment:
       DATABASE_URL: postgresql://aquaproof:${POSTGRES_PASSWORD:-aquaproof-local}@db/aquaproof
-      AQUAPROOF_ALLOW_UNAUTHENTICATED_DEV: ${AQUAPROOF_ALLOW_UNAUTHENTICATED_DEV:-0}
       AQUAPROOF_BACKGROUND_WHATSAPP: ${AQUAPROOF_BACKGROUND_WHATSAPP:-0}
-      GREEN_API_ID_INSTANCE: ${GREEN_API_ID_INSTANCE:-}
-      GREEN_API_TOKEN_INSTANCE: ${GREEN_API_TOKEN_INSTANCE:-}
-      GREEN_API_BASE_URL: ${GREEN_API_BASE_URL:-https://api.green-api.com}
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://waha:3000}
+      WAHA_SESSION: ${WAHA_SESSION:-default}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
       AQUAPROOF_HEALTH_ENABLED: ${AQUAPROOF_HEALTH_ENABLED:-1}
       ASSISTANT_ENABLED: ${ASSISTANT_ENABLED:-0}
-      ASSISTANT_OFFICER_TOKEN: ${ASSISTANT_OFFICER_TOKEN:-}
+      AQUAPROOF_OFFICER_PASSWORD_HASH: ${AQUAPROOF_OFFICER_PASSWORD_HASH:-}
+      AQUAPROOF_SESSION_SECRET: ${AQUAPROOF_SESSION_SECRET:-}
+      AQUAPROOF_SECURE_COOKIES: ${AQUAPROOF_SECURE_COOKIES:-0}
       ASSISTANT_REPLY_SECRET: ${ASSISTANT_REPLY_SECRET:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o}
@@ -49,9 +51,31 @@ services:
       OPEN_METEO_GEOCODING_URL: ${OPEN_METEO_GEOCODING_URL:-https://geocoding-api.open-meteo.com/v1/search}
       NASA_POWER_URL: ${NASA_POWER_URL:-https://power.larc.nasa.gov/api/temporal/daily/point}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${AQUAPROOF_API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+  waha:
+    profiles: ["waha"]
+    image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
+    ports:
+      - "127.0.0.1:${WAHA_PORT:-3000}:3000"
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-}
+      WHATSAPP_SWAGGER_ENABLED: "false"
+      WAHA_PRINT_QR: "false"
+      WAHA_EVENTS_DOWNLOAD_MEDIA: "false"
+      WAHA_API_DOWNLOAD_MEDIA: "false"
+      WHATSAPP_HOOK_URL: http://api:8000/webhooks/waha
+      WHATSAPP_HOOK_EVENTS: message
+      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_WEBHOOK_SECRET:-}
+      WHATSAPP_HOOK_RETRIES_POLICY: constant
+      WHATSAPP_HOOK_RETRIES_DELAY_SECONDS: 3
+      WHATSAPP_HOOK_RETRIES_ATTEMPTS: 15
+    volumes:
+      - waha-sessions:/app/.sessions
 volumes:
   registry-data:
+  waha-sessions:

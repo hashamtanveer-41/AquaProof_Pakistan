@@ -2,8 +2,8 @@ from datetime import date
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
-from psycopg.errors import CheckViolation, UniqueViolation
+from fastapi import APIRouter, HTTPException, Response
+from psycopg.errors import CheckViolation, DeadlockDetected, LockNotAvailable, UniqueViolation
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -15,6 +15,7 @@ from pydantic import (
 
 from .assistant_access import queue_field_recheck
 from .database import connect
+from .science import weather
 from .science.crops import estimated_stage, local_today
 
 router = APIRouter(prefix="/api", tags=["registry"])
@@ -63,6 +64,11 @@ class FieldInput(Input):
     source: Label
     crop: Label
     boundary: Boundary
+
+
+class PermanentFieldDeletion(Input):
+    field_id: Label
+    confirmation: Literal["DELETE"]
 
 
 class Registration(Input):
@@ -260,6 +266,58 @@ def archive_field(field_id: str):
             """UPDATE fields SET archived_at = COALESCE(archived_at, now())
                WHERE id = %s RETURNING id""", (field_id,),
         ).fetchone(), "Field")
+
+
+@router.get("/registry/archived-fields")
+def archived_fields():
+    with connect() as connection:
+        return connection.execute(
+            "SELECT id,name,archived_at FROM fields WHERE archived_at IS NOT NULL ORDER BY archived_at DESC,id",
+        ).fetchall()
+
+
+@router.post("/registry/permanent-field-deletion", status_code=204)
+def permanently_delete_field(payload: PermanentFieldDeletion):
+    field_id = payload.field_id
+    try:
+        with connect() as connection:
+            connection.execute("SET LOCAL lock_timeout = '3s'")
+            point = connection.execute(
+                """SELECT ST_Y(representative_point) AS latitude,ST_X(representative_point) AS longitude
+                   FROM fields WHERE id=%s FOR UPDATE""", (field_id,),
+            ).fetchone()
+            if not point:
+                return Response(status_code=204)
+            messages = [
+                row["id"] for row in connection.execute(
+                    "SELECT id FROM assistant_messages WHERE field_id=%s FOR UPDATE", (field_id,),
+                ).fetchall()
+            ]
+            connection.execute("DELETE FROM assistant_audit WHERE message_id=ANY(%s::uuid[])", (messages,))
+            connection.execute(
+                "DELETE FROM assistant_jobs WHERE field_id=%s OR inbound_id=ANY(%s::uuid[])", (field_id, messages),
+            )
+            connection.execute(
+                "DELETE FROM assistant_observations WHERE field_id=%s OR inbound_id=ANY(%s::uuid[])",
+                (field_id, messages),
+            )
+            connection.execute("DELETE FROM assistant_messages WHERE id=ANY(%s::uuid[])", (messages,))
+            connection.execute(
+                "DELETE FROM farmer_messages WHERE advisory_id IN (SELECT id FROM advisories WHERE field_id=%s)",
+                (field_id,),
+            )
+            connection.execute("DELETE FROM advisories WHERE field_id=%s", (field_id,))
+            connection.execute(
+                "DELETE FROM irrigation_decisions WHERE season_id IN (SELECT id FROM crop_seasons WHERE field_id=%s)",
+                (field_id,),
+            )
+            connection.execute("DELETE FROM crop_seasons WHERE field_id=%s", (field_id,))
+            connection.execute("DELETE FROM irrigation_settings WHERE field_id=%s", (field_id,))
+            connection.execute("DELETE FROM fields WHERE id=%s", (field_id,))
+    except (LockNotAvailable, DeadlockDetected):
+        raise HTTPException(409, "This field is being updated. Try permanent deletion again.") from None
+    weather.evict_point(round(point["latitude"], 5), round(point["longitude"], 5))
+    return Response(status_code=204)
 
 
 @router.post("/crop-seasons", status_code=201)

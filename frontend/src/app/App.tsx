@@ -14,6 +14,7 @@ import {
   Map as MapIcon,
   MapPin,
   Menu,
+  MessagesSquare,
   PanelLeftClose,
   RefreshCw,
   Search,
@@ -29,13 +30,15 @@ import { Brand, Card, Chip, PageTitle } from "@/components/ui";
 import { FarmMap } from "@/features/map/FarmMap";
 import { RegisterModal, type Registration } from "@/features/registration/RegisterModal";
 import { ServiceHealth } from "@/pages/ServiceHealth";
+import { WhatsAppSendingPhone } from "@/pages/WhatsAppSendingPhone";
 import {
   archiveField,
   ApiError,
   loadRegistry,
   polygon,
+  permanentlyDeleteField,
   registerFarmer,
-  setOfficerToken,
+  request,
   updateBoundary,
 } from "@/domain/registry";
 
@@ -46,6 +49,7 @@ const Registry = lazy(() => import("@/pages/Registry"));
 const Weather = lazy(() => import("@/pages/Weather"));
 const FieldIntelligence = lazy(() => import("@/pages/FieldIntelligence"));
 const LiveAdvisory = lazy(() => import("@/pages/LiveAdvisory"));
+const WhatsAppConversations = lazy(() => import("@/pages/WhatsAppConversations"));
 const FieldHistory = lazy(() => import("@/pages/FieldHistory"));
 
 const navigation = [
@@ -64,6 +68,7 @@ const navigation = [
       { id: "irrigation", label: "Irrigation Intelligence", icon: Droplets },
       { id: "weather", label: "Weather & Canal Data", icon: Waves },
       { id: "advisory", label: "AI Advisory Center", icon: Sparkles },
+      { id: "conversations", label: "WhatsApp Conversations", icon: MessagesSquare },
     ],
   },
   {
@@ -85,6 +90,8 @@ export default function App() {
   const [registryStatus, setRegistryStatus] = useState("Loading registry…");
   const [officerLogin, setOfficerLogin] = useState(false);
   const [officerSession, setOfficerSession] = useState(false);
+  const [officerBusy, setOfficerBusy] = useState(false);
+  const [officerError, setOfficerError] = useState("");
   const [registryAttempt, setRegistryAttempt] = useState(0);
   const registryWrite = useRef(false);
   const registryVersion = useRef(0);
@@ -123,6 +130,7 @@ export default function App() {
         setFarmers(data.farmers);
         setFields(data.fields);
         setOfficerLogin(false);
+        setOfficerSession(true);
         setRegistryStatus("");
       })
       .catch((error) => {
@@ -130,7 +138,7 @@ export default function App() {
         const unauthorized = error instanceof ApiError && error.status === 401;
         const databaseUnavailable = error instanceof ApiError && error.status === 503;
         setOfficerLogin(unauthorized);
-        if (unauthorized) setOfficerSession(false);
+        if (unauthorized || databaseUnavailable) setOfficerSession(databaseUnavailable);
         setRegistryStatus(
           unauthorized
             ? "Officer sign-in required."
@@ -245,17 +253,31 @@ export default function App() {
       registryWrite.current = false;
     }
   };
-  const deleteField = async (id: string) => {
+  const deleteField = async (id: string, permanentName?: string) => {
+    if (registryWrite.current) return false;
+    if (
+      permanentName &&
+      window.prompt(
+        `Permanently delete "${permanentName}" and its saved AquaProof history? The farmer and other fields are kept. Type DELETE to confirm.`,
+      ) !== "DELETE"
+    )
+      return false;
+    registryWrite.current = true;
     try {
-      await archiveField(id);
+      if (permanentName) await permanentlyDeleteField(id);
+      else await archiveField(id);
       registryVersion.current += 1;
       setFields((existing) => existing.filter((item) => item.id !== id));
       setFieldId((existing) => (existing === id ? "" : existing));
       setDraft(null);
       setEditing(false);
-      notify("Field removed from the active registry.");
+      notify(permanentName ? "Field and its saved history deleted." : "Field archived.");
+      return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "The field could not be removed.");
+      return false;
+    } finally {
+      registryWrite.current = false;
     }
   };
   const saveRegistration = async (
@@ -501,10 +523,14 @@ export default function App() {
                   <p>{officerSession ? "OFFICER SESSION" : "WORKSPACE ACCESS"}</p>
                   {officerSession && (
                     <button
-                      onClick={() => {
-                        setOfficerToken("");
-                        setOfficerSession(false);
-                        refreshRegistry();
+                      onClick={async () => {
+                        try {
+                          await request("/auth/sign-out", "POST");
+                          setOfficerSession(false);
+                          refreshRegistry();
+                        } catch {
+                          notify("Sign-out failed. Try again.");
+                        }
                       }}
                     >
                       Sign out
@@ -532,22 +558,38 @@ export default function App() {
               {officerLogin ? (
                 <form
                   className="officer-sign-in"
-                  onSubmit={(event) => {
+                  onSubmit={async (event) => {
                     event.preventDefault();
+                    if (officerBusy) return;
                     const form = event.currentTarget;
-                    setOfficerToken(String(new FormData(form).get("token") ?? ""));
-                    form.reset();
-                    setOfficerSession(true);
-                    refreshRegistry();
+                    const password = String(new FormData(form).get("password") ?? "");
+                    setOfficerError("");
+                    setOfficerBusy(true);
+                    try {
+                      await request("/auth/sign-in", "POST", { password });
+                      form.reset();
+                      setOfficerSession(true);
+                      refreshRegistry();
+                    } catch (error) {
+                      setOfficerError(error instanceof Error ? error.message : "Sign-in failed.");
+                    } finally {
+                      setOfficerBusy(false);
+                    }
                   }}
                 >
                   <label>
-                    Officer access token
-                    <input type="password" name="token" required autoComplete="off" />
+                    Officer password
+                    <input
+                      type="password"
+                      name="password"
+                      required
+                      autoComplete="current-password"
+                    />
                   </label>
-                  <button className="button primary" type="submit">
+                  <button className="button primary" type="submit" disabled={officerBusy}>
                     Sign in
                   </button>
+                  {officerError && <span role="alert">{officerError}</span>}
                 </form>
               ) : (
                 registryStatus !== "Loading registry…" && (
@@ -644,6 +686,14 @@ export default function App() {
               {page === "advisory" && (
                 <LiveAdvisory fields={fields} selectedFieldId={fieldId} openMap={() => go("map")} />
               )}
+              {page === "conversations" && (
+                <WhatsAppConversations
+                  farmers={farmers}
+                  fields={fields}
+                  selectedFarmerId={mapField?.farmerId ?? farmerId}
+                  openAdvisory={(id) => openField(id, "advisory")}
+                />
+              )}
               {page === "irrigation" && (
                 <FieldIntelligence
                   field={mapField}
@@ -658,6 +708,7 @@ export default function App() {
                   fields={visibleFields}
                   select={setFieldId}
                   openMap={() => go("map")}
+                  onDelete={deleteField}
                 />
               )}
               {page === "settings" && (
@@ -667,6 +718,7 @@ export default function App() {
                     title="Settings"
                     description="Review service availability and accessibility settings."
                   />
+                  <WhatsAppSendingPhone />
                   <ServiceHealth />
                   <div className="grid-2">
                     <Card title="Accessibility & localization" action={<Globe2 size={19} />}>

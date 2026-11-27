@@ -12,6 +12,7 @@ type Message = {
   body: string;
   review_reason?: string;
   created_at: string;
+  whatsapp_transport: "waha" | "green_api" | null;
   evidence: Record<string, unknown>;
   usage: { calls?: unknown[] };
 };
@@ -137,7 +138,7 @@ export function AssistantMonitor({ field }: { field: Field }) {
         <p>The assistant is disabled in this environment. WhatsApp messaging is paused.</p>
       )}
       {enabled && !whatsapp && (
-        <p>Green API credentials are required to enable WhatsApp messaging.</p>
+        <p>Configure the WAHA session and webhook to enable WhatsApp messaging.</p>
       )}
       {enabled && whatsapp && !worker && (
         <p>The WhatsApp worker is paused. Messages stay in the queue.</p>
@@ -230,7 +231,11 @@ export function AssistantMonitor({ field }: { field: Field }) {
                           {message.kind} · {message.direction}
                         </strong>
                         <Chip tone={message.status === "review" ? "amber" : "neutral"}>
-                          {message.status === "sent" ? "Accepted by Green API" : message.status}
+                          {message.status === "sent"
+                            ? message.whatsapp_transport === "waha"
+                              ? "Accepted by WAHA"
+                              : "Accepted by WhatsApp provider"
+                            : message.status}
                         </Chip>
                         <time dateTime={message.created_at}>
                           {new Date(message.created_at).toLocaleString()}

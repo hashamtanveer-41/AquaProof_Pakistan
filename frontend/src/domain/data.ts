@@ -9,6 +9,7 @@ export type Page =
   | "irrigation"
   | "weather"
   | "advisory"
+  | "conversations"
   | "reports"
   | "settings";
 export type Farmer = {

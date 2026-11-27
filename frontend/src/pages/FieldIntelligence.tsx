@@ -5,6 +5,7 @@ import type { Field, SelectField } from "@/domain/data";
 import { request } from "@/domain/registry";
 import { formatWeatherTime } from "@/domain/weather";
 import { CropLifecycle } from "@/features/irrigation/CropLifecycle";
+import { CropProgress } from "@/features/irrigation/CropProgress";
 import {
   DailyWaterBalance,
   show,
@@ -437,6 +438,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
           </Button>
         )}
       </Card>
+      <CropProgress key={path} path={path} />
       <CropLifecycle path={path} />
       <Card
         title="Irrigation scenarios"

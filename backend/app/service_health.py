@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException
 
-from . import arcgis, assistant_model, green_api
+from . import arcgis, assistant_model, waha
 from .science import openweather, weather
 from .science import weather_backup as backup
 from .service_http import ProviderError, request_json
@@ -123,16 +123,12 @@ def openrouter_completion():
 
 
 def whatsapp():
-    required("GREEN_API_ID_INSTANCE", "GREEN_API_TOKEN_INSTANCE")
-    service = green_api.settings()
+    required("WAHA_BASE_URL", "WAHA_API_KEY", "WAHA_WEBHOOK_SECRET")
+    service = waha.settings()
     if not service:
-        raise ProviderError("Missing valid Green API credentials or approved HTTPS instance URL")
+        raise ProviderError("Invalid WAHA URL, session or credentials")
     state, status = service.state()
-    if state != "authorized":
-        return {"ok": False, "http_status": status, "detail": f"WhatsApp instance state: {state}"}
-    if issue := service.polling_issue():
-        return {"ok": False, "http_status": status, "detail": issue}
-    return {"http_status": status, "detail": "Authorized with incoming notifications enabled. No messages sent."}
+    return {"ok": state == "WORKING", "http_status": status, "detail": f"WAHA session: {state}"}
 
 
 def raster(url):
@@ -181,7 +177,7 @@ def services():
         yield "ArcGIS basemap styles", f"{arcgis.STYLES}/{path}", lambda path=path: arcgis_style(path)
     yield "OpenRouter", "https://openrouter.ai/api/v1/key", openrouter
     yield "OpenRouter", assistant_model.ENDPOINT, openrouter_completion
-    yield "Green API WhatsApp", "getStateInstance / getSettings", whatsapp
+    yield "WAHA WhatsApp", "GET /api/sessions/{session}", whatsapp
     yield "OpenFreeMap", "https://tiles.openfreemap.org/styles/liberty", lambda: (
         {"ok": request_json("GET", "https://tiles.openfreemap.org/styles/liberty")[0].get("version") == 8})
     yield "OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png", lambda: (

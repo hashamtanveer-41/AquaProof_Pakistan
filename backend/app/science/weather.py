@@ -19,6 +19,7 @@ TIMEZONE = "Asia/Karachi"
 LOCAL_ZONE = ZoneInfo(TIMEZONE)
 _cache = OrderedDict()
 _cache_lock = Lock()
+_cache_generation = 0
 
 def number(value):
     if type(value) in (float, int) and math.isfinite(value):
@@ -145,17 +146,29 @@ def fresh_current(data):
 
 def cached(cache_key, loader, max_age=180):
     with _cache_lock:
+        generation = _cache_generation
         entry = _cache.get(cache_key)
         if entry and monotonic() - entry[0] < max_age:
             _cache.move_to_end(cache_key)
             return deepcopy(entry[1])
     result = loader()
     with _cache_lock:
-        _cache[cache_key] = (monotonic(), deepcopy(result))
-        _cache.move_to_end(cache_key)
-        if len(_cache) > 512:
-            _cache.popitem(last=False)
+        if generation == _cache_generation:
+            _cache[cache_key] = (monotonic(), deepcopy(result))
+            _cache.move_to_end(cache_key)
+            if len(_cache) > 512:
+                _cache.popitem(last=False)
     return result
+
+
+def evict_point(latitude, longitude):
+    global _cache_generation
+    coordinate = point_query(latitude, longitude)
+    with _cache_lock:
+        _cache_generation += 1
+        for key in list(_cache):
+            if key[1:2] == (coordinate,) or key[1:3] == (latitude, longitude):
+                _cache.pop(key)
 
 
 def fresh_openweather_forecast(data):

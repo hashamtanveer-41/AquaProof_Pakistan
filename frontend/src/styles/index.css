@@ -776,6 +776,39 @@
 .assistant-monitor h3 {
   font-weight: 700;
 }
+.whatsapp-thread {
+  margin-top: 1rem;
+}
+.whatsapp-messages {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  padding: 0;
+}
+.whatsapp-message {
+  width: fit-content;
+  max-width: min(90%, 44rem);
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.whatsapp-message.inbound {
+  background: #f3f6f9;
+}
+.whatsapp-message.outbound {
+  justify-self: end;
+  background: #ecf7f0;
+}
+.whatsapp-message p {
+  margin-bottom: 0;
+}
+.whatsapp-thread-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
 .assistant-monitor pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1803,4 +1836,85 @@ form .form-grid + .button {
 
 .boundary-history-controls ~ .live-map-status {
   top: 3.5rem;
+}
+
+.stage-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-block: 1rem;
+}
+
+.stage-bar-cell {
+  flex: 1 1 0;
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.stage-bar-track {
+  display: block;
+  height: 9px;
+  border-radius: 999px;
+  background: #e8eeeb;
+  overflow: hidden;
+}
+
+.stage-bar-cell.complete .stage-bar-track {
+  background: #168556;
+}
+
+.stage-bar-cell.current .stage-bar-track {
+  background: #d7e8df;
+}
+
+.stage-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #168556;
+}
+
+.stage-bar-cell strong {
+  font-size: 0.82rem;
+}
+
+.stage-bar-cell small {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-bar-cell.upcoming strong,
+.stage-bar-cell.upcoming small {
+  color: var(--muted);
+}
+
+.water-now {
+  margin-block: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #d7e8df;
+  border-radius: 12px;
+  background: #f5faf7;
+}
+
+.water-now h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.water-now-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 0.75rem;
+  margin-block-end: 0.5rem;
+}
+
+.water-now-grid strong {
+  display: block;
+  font-size: 1.15rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.water-missing {
+  display: block;
+  margin-block-start: 0.35rem;
 }

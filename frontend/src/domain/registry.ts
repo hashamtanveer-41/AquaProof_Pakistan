@@ -1,17 +1,9 @@
 import type { Farmer, Field, Point } from "./data";
 
 const api = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
-let officerToken = "";
-
-export function setOfficerToken(token: string) {
-  officerToken = token.trim();
-}
 
 export function mapServerRequest(path: string) {
-  return {
-    url: `${api}${path}`,
-    ...(officerToken && { headers: { Authorization: `Bearer ${officerToken}` } }),
-  };
+  return { url: `${api}${path}`, credentials: "same-origin" as const };
 }
 
 export class ApiError extends Error {
@@ -62,10 +54,10 @@ export async function request<T>(
   const response = await fetch(`${api}/api${path}`, {
     method,
     cache: "no-store",
+    credentials: "same-origin",
     signal: signal && timeout ? AbortSignal.any([signal, timeout]) : (signal ?? timeout),
     headers: {
       ...(data === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(officerToken && { Authorization: `Bearer ${officerToken}` }),
     },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
@@ -81,7 +73,7 @@ export async function request<T>(
           : `Request failed (${response.status}).`,
     );
   }
-  return response.json();
+  return response.status === 204 ? (undefined as T) : response.json();
 }
 
 export async function loadRegistry(signal?: AbortSignal) {
@@ -92,6 +84,16 @@ export async function loadRegistry(signal?: AbortSignal) {
     signal,
   );
   return { farmers: data.farmers, fields: data.fields.map(toField) };
+}
+
+export async function requestImage(path: string, signal: AbortSignal) {
+  const response = await fetch(`${api}/api${path}`, {
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw new ApiError(response.status, "The pairing QR is not available yet.");
+  return response.blob();
 }
 
 export async function registerFarmer(owner: Farmer, field?: FieldDetails & { boundary: Boundary }) {
@@ -113,6 +115,13 @@ export async function updateBoundary(id: string, points: Point[]) {
 
 export function archiveField(id: string) {
   return request<{ id: string }>(`/fields/${encodeURIComponent(id)}`, "DELETE");
+}
+
+export function permanentlyDeleteField(id: string) {
+  return request<void>("/registry/permanent-field-deletion", "POST", {
+    field_id: id,
+    confirmation: "DELETE",
+  });
 }
 
 export async function startSeason(id: string, crop: string, variety: string, planted: string) {

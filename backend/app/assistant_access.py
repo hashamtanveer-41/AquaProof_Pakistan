@@ -1,4 +1,3 @@
-import hmac
 import os
 from contextlib import contextmanager
 from uuid import uuid4
@@ -10,18 +9,6 @@ from .database import connect
 
 def enabled():
     return os.getenv("ASSISTANT_ENABLED", "0") == "1"
-
-
-def officer_login_required():
-    return enabled() or os.getenv("AQUAPROOF_ALLOW_UNAUTHENTICATED_DEV") != "1"
-
-
-def officer_authorized(authorization):
-    secret = os.getenv("ASSISTANT_OFFICER_TOKEN", "")
-    scheme, _, supplied = (authorization or "").partition(" ")
-    return len(secret) >= 32 and scheme.lower() == "bearer" and hmac.compare_digest(
-        secret.encode(), supplied.encode(),
-    )
 
 
 def verified(connection, farmer_id, *, lock=False):

@@ -39,3 +39,33 @@ All 42 backend tests passed with isolated PostGIS. Migration 012 applied and rep
 - With a separately measured synthetic fixture, the science engine calculated 720 m³, 8 h and PKR 4,400. The message stayed in the officer review queue.
 
 The live WhatsApp reply round trip, a Docker image build, and production-scale browser and concurrency tests remain open. The production web bundle builds with a Vite warning for the lazy MapLibre chunk. The installed Starlette version issues a TestClient deprecation notice for its current HTTPX adapter. Crop-model QA did not include independent field accuracy or yield validation data.
+
+### WAHA integration and conversation dashboard
+
+All 42 backend tests passed against isolated PostGIS. Migration 013 applied and its repeat run was idempotent. The WAHA contract tests covered text payloads, linked sender resolution and uncertain send outcomes. Signed webhook tests covered officer-requested Urdu verification, invalid signatures, wrong-number rejection, replay protection, ID-only quotes and two consecutive farmer replies. Conversation pagination kept messages scoped to the selected farmer and historical email rows stayed in their original channel.
+
+Frontend formatting, TypeScript, the production build and the Edge persistence suite passed. Edge queued verification with the worker paused, displayed the queued message in WhatsApp Conversations and opened the farmer's Advisory Center from the thread.
+
+The local Ubuntu WAHA container reached the pairing screen after Docker Desktop reported read-only container storage. From the WAHA container, an unsigned callback returned HTTP 401 and a signed callback reached the paused worker and returned HTTP 503.
+
+### Officer browser sign-in
+
+All 42 backend tests passed with isolated PostGIS. The sign-in checks covered incorrect passwords, cross-origin rejection, HTTP-only cookie attributes, expired and tampered cookies, sign-out and API protection while the assistant is disabled. Edge signed in with the password once, reloaded the workspace and used the saved session to access the registry and conversation history. Frontend formatting, TypeScript and the production build passed.
+
+### Live weather and outbound WhatsApp recheck
+
+Both local dashboards returned HTTP 200 for the sampled weather routes. Edge rendered current conditions, the registered-field forecast, soil and solar data, recent history, the historical archive and the Multan city search. The primary field's simulation returned the expected HTTP 409 for missing irrigation inputs. The isolated WAHA test sent the officer-requested verification and received a `DEVICE` acknowledgement for that exact message. Farmer confirmation was pending.
+
+### Conversation refresh and live confirmation
+
+An officer refresh checked the WAHA GOWS inbox for the registered test recipient, recovered the plain confirmation and marked that number verified. The isolated worker sent the enrollment acknowledgement. Edge showed both directions and kept a single confirmation after a second refresh. Tests exercised linked sender resolution, plain replies, missed-message recovery, rejection of older and wrong-number confirmations, and replay protection.
+
+### Field-aware replies and permanent deletion
+
+All 44 backend tests passed against isolated PostGIS. A read-only replay of the recorded soil question resolved the already linked field and returned its saved soil type, Loam. A greeting with a known field produced a topic prompt naming that field. Permanent deletion removed the synthetic field, linked messages and audit entries, historical email records, crop and irrigation records, and the API process's weather cache entry. The farmer and a sibling field remained accessible.
+
+Edge confirmed that cancelling the permanent deletion prompt keeps an archived field and typing `DELETE` removes it from the archive. Frontend formatting, TypeScript and the production build passed. A live dashboard check confirmed API access logs omit the requested field ID.
+
+### Plain WhatsApp chat and sender controls
+
+All 45 backend tests passed against isolated PostGIS. Tests confirmed plain consent after an officer request, two consecutive verified messages without reply codes, provider message deduplication, retention of the farmer ownership gate, and officer-only pairing, QR and unlink endpoints. The live main workspace reported its assistant and WAHA worker active and accepted a signed diagnostic callback. The configured OpenRouter GPT-4o route returned valid structured output and a forced tool call for synthetic data. The current sending phone stayed linked during testing.

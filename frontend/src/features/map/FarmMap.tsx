@@ -102,7 +102,7 @@ export function FarmMap({
   onIrrigation: () => void;
   onRegister: () => void;
   onSave: () => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (id: string, permanentName?: string) => Promise<boolean>;
   draft: Point[] | null;
   setDraft: (value: Point[] | null) => void;
   editing: boolean;
@@ -387,8 +387,9 @@ export function FarmMap({
     setDraft(null);
   }
 
-  async function removeField(item: Field) {
+  async function removeField(item: Field, permanent = false) {
     if (
+      !permanent &&
       !window.confirm(
         'Remove "' +
           item.name +
@@ -398,7 +399,7 @@ export function FarmMap({
       return;
     setDeleting(true);
     try {
-      await onDelete(item.id);
+      await onDelete(item.id, permanent ? item.name : undefined);
     } finally {
       setDeleting(false);
     }
@@ -714,7 +715,7 @@ export function FarmMap({
                     <Button onClick={discardDraft}>Discard changes</Button>
                     {editing && field && (
                       <Button disabled={deleting} onClick={() => void removeField(field)}>
-                        <Trash2 size={15} /> Remove field
+                        <Trash2 size={15} /> Archive field
                       </Button>
                     )}
                   </div>
@@ -789,7 +790,10 @@ export function FarmMap({
                       <PenLine size={15} /> Edit Boundary
                     </Button>
                     <Button disabled={deleting} onClick={() => void removeField(field)}>
-                      <Trash2 size={15} /> Remove field
+                      <Trash2 size={15} /> Archive field
+                    </Button>
+                    <Button disabled={deleting} onClick={() => void removeField(field, true)}>
+                      Delete permanently
                     </Button>
                   </div>
                   {showWeather && (

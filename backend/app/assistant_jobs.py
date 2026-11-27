@@ -54,10 +54,6 @@ def queue_message(conn, farmer_id, *, kind, body, dedupe, field_id=None, evidenc
 
 def enroll(farmer_id, language=None, field_id=None):
     try:
-        signed_token(uuid4())
-    except RuntimeError:
-        raise HTTPException(503, "Configure the reply authentication secret first.") from None
-    try:
         with connect() as conn:
             person = conn.execute(
                 "SELECT aquaproof_whatsapp_phone(phone) AS phone FROM farmers WHERE id=%s FOR UPDATE",
@@ -85,52 +81,102 @@ def enroll(farmer_id, language=None, field_id=None):
                 (farmer_id, person["phone"]),
             ).fetchone():
                 return "WhatsApp verification was requested recently."
-            queue_message(conn, farmer_id, kind="verify", body=copy.template(identity["language"], "verify"),
-                          dedupe=f"verify:wa:{uuid4()}", field_id=field_id)
-            audit(conn, "whatsapp_enrollment_requested", farmer_id)
+            request = queue_message(conn, farmer_id, kind="verify", body=copy.template(identity["language"], "verify"),
+                                    dedupe=f"verify:wa:{uuid4()}", field_id=field_id)
+            if request:
+                audit(conn, "whatsapp_enrollment_requested", farmer_id, request["id"])
     except UniqueViolation:
         raise HTTPException(409, "This WhatsApp number is already registered to another farmer.") from None
     return "WhatsApp verification queued."
 
 
-def accept_message(sender, message_key, body, quote=None, reply_to=None):
+def waha_reply_context(conn, sender, received_at, consent, reply_to):
+    identity = conn.execute(
+        """SELECT i.farmer_id,i.language,i.whatsapp_verified_at
+           FROM assistant_identities i JOIN farmers f ON f.id=i.farmer_id
+           WHERE i.whatsapp_phone=%s AND i.whatsapp_phone=aquaproof_whatsapp_phone(f.phone)
+           FOR UPDATE OF i""", (sender,),
+    ).fetchone()
+    if not identity:
+        return None
+    farmer = identity["farmer_id"]
+    if not identity["whatsapp_verified_at"]:
+        if not consent:
+            return None
+        pending = conn.execute(
+            """SELECT id,field_id FROM assistant_messages
+               WHERE farmer_id=%s AND recipient_phone=%s AND channel='whatsapp'
+                 AND direction='outbound' AND kind='verify' AND status='sent'
+                 AND whatsapp_transport='waha' AND reply_used_at IS NULL
+                 AND delivered_at>now()-interval '7 days' AND date_trunc('second',delivered_at)<=%s
+               ORDER BY delivered_at DESC,id DESC LIMIT 1 FOR UPDATE""", (farmer, sender, received_at),
+        ).fetchone()
+        return {**identity, **pending, "kind": "verify"} if pending else None
+    if received_at < identity["whatsapp_verified_at"].replace(microsecond=0):
+        return None
+    context = conn.execute(
+        """SELECT m.field_id FROM assistant_messages m JOIN fields f ON f.id=m.field_id
+           WHERE m.farmer_id=%s AND m.recipient_phone=%s AND m.channel='whatsapp'
+             AND f.farmer_id=m.farmer_id AND f.archived_at IS NULL
+             AND m.status IN ('sent','received')
+             AND date_trunc('second',coalesce(m.delivered_at,m.created_at))<=%s
+           ORDER BY (m.direction='outbound' AND m.provider_message_id IS NOT DISTINCT FROM %s
+                     AND %s::text IS NOT NULL) DESC,
+                    coalesce(m.delivered_at,m.created_at) DESC,m.id DESC LIMIT 1""",
+        (farmer, sender, received_at, reply_to, reply_to),
+    ).fetchone()
+    return {**identity, "id": None, "kind": "reply", "field_id": context["field_id"] if context else None}
+
+
+def accept_message(sender, message_key, body, quote=None, reply_to=None, *, transport=None, received_at=None):
     matches = TOKEN.findall(body) + TOKEN.findall((quote or "")[:8192])
+    cleaned = QUOTE.sub("", TOKEN.sub("", body)).strip()[:2400]
+    if not cleaned:
+        return False
+    consent = cleaned.casefold() in CONSENT
+    direct = transport == "waha" and received_at is not None
+    issued_id = None
     try:
-        if not matches and reply_to:
-            # Green API can include a quoted message ID without its text. Resolve only an issued
-            # message for this direct chat, then apply the normal expiry and ownership checks.
+        if not direct and not matches and reply_to:
+            # Resolve ID-only quotes for this direct chat, then apply the normal expiry and ownership checks.
             with connect() as conn:
                 issued = conn.execute(
                     """SELECT id FROM assistant_messages WHERE provider_message_id=%s AND recipient_phone=%s
                        AND channel='whatsapp' AND direction='outbound'
-                       ORDER BY created_at DESC LIMIT 1""", (reply_to, sender),
+                       AND whatsapp_transport IS NOT DISTINCT FROM %s
+                       ORDER BY created_at DESC LIMIT 1""", (reply_to, sender, transport),
                 ).fetchone()
             if issued:
                 matches = [signed_token(issued["id"])]
-        if len(set(matches)) != 1:
-            return False
-        issued_id = UUID(matches[0].split(".", 1)[0])
-        if not hmac.compare_digest(signed_token(issued_id), matches[0]):
+        if not direct and matches:
+            if len(set(matches)) != 1:
+                return False
+            issued_id = UUID(matches[0].split(".", 1)[0])
+            if not hmac.compare_digest(signed_token(issued_id), matches[0]):
+                return False
+        elif not direct:
             return False
     except (ValueError, RuntimeError):
         return False
 
-    cleaned = QUOTE.sub("", TOKEN.sub("", body)).strip()[:2400]
     with connect() as conn:
-        row = conn.execute(
+        row = waha_reply_context(conn, sender, received_at, consent, reply_to) if direct else conn.execute(
             """SELECT m.id,m.farmer_id,m.kind,m.field_id,i.language,i.whatsapp_verified_at
                FROM assistant_messages m JOIN assistant_identities i ON i.farmer_id=m.farmer_id
                JOIN farmers f ON f.id=m.farmer_id
-               WHERE m.id=%s AND m.direction='outbound' AND m.channel='whatsapp' AND m.status='sent'
+               WHERE m.direction='outbound' AND m.channel='whatsapp' AND m.status='sent'
                  AND m.reply_used_at IS NULL AND m.delivered_at > now() - interval '7 days'
                  AND m.recipient_phone=i.whatsapp_phone AND i.whatsapp_phone=%s
                  AND i.whatsapp_phone=aquaproof_whatsapp_phone(f.phone)
-               FOR UPDATE OF m,i""", (issued_id, sender.casefold()),
+                 AND m.id=%s
+                 AND ((m.kind='verify' AND i.whatsapp_verified_at IS NULL AND %s)
+                      OR (m.kind<>'verify' AND i.whatsapp_verified_at IS NOT NULL))
+               ORDER BY m.delivered_at DESC,m.id DESC LIMIT 1 FOR UPDATE OF m,i""",
+            (sender, issued_id, consent),
         ).fetchone()
-        if not row or (row["kind"] != "verify" and (not row["whatsapp_verified_at"] or not cleaned)):
+        if not row:
             return False
-        if row["kind"] == "verify" and cleaned.casefold() not in CONSENT:
-            return False
+        issued_id = row["id"]
         farmer = row["farmer_id"]
         field_id = row["field_id"]
         if field_id and not conn.execute(
@@ -140,21 +186,27 @@ def accept_message(sender, message_key, body, quote=None, reply_to=None):
             field_id = None
         inbound_key = "inbound:" + farmer + ":" + hashlib.sha256(message_key.encode()).hexdigest()
         message = conn.execute(
-            """INSERT INTO assistant_messages(id,farmer_id,field_id,direction,kind,status,body,dedupe,recipient_phone,provider_message_id)
-               VALUES (%s,%s,%s,'inbound',%s,'received',%s,%s,%s,%s)
+            """INSERT INTO assistant_messages(id,farmer_id,field_id,direction,kind,status,body,dedupe,
+                   recipient_phone,provider_message_id,whatsapp_transport,created_at)
+               VALUES (%s,%s,%s,'inbound',%s,'received',%s,%s,%s,%s,%s,COALESCE(%s,now()))
                ON CONFLICT(dedupe) DO NOTHING RETURNING id""",
             (uuid4(), farmer, field_id, "verify" if row["kind"] == "verify" else "reply",
-             "" if row["kind"] == "verify" else model.clean(cleaned), inbound_key, sender, message_key),
+             model.clean(cleaned), inbound_key, sender, message_key, transport,
+             received_at),
         ).fetchone()
         if not message:
             return False
-        conn.execute("UPDATE assistant_messages SET reply_used_at=now() WHERE id=%s", (issued_id,))
+        if issued_id:
+            conn.execute("UPDATE assistant_messages SET reply_used_at=now() WHERE id=%s", (issued_id,))
         audit(conn, "authenticated_inbound", farmer, message["id"])
         if row["kind"] != "verify" and cleaned.casefold() in ("stop", "unsubscribe", "band", "بند"):
             conn.execute("UPDATE assistant_identities SET whatsapp_verified_at=NULL WHERE farmer_id=%s", (farmer,))
             conn.execute(
-                """UPDATE assistant_messages SET status='cancelled',updated_at=now() WHERE farmer_id=%s
-                   AND channel='whatsapp' AND direction='outbound' AND status IN ('queued','review')""", (farmer,),
+                """UPDATE assistant_messages
+                   SET status=CASE WHEN status IN ('queued','review') THEN 'cancelled' ELSE status END,
+                       reply_used_at=CASE WHEN kind='verify' THEN now() ELSE reply_used_at END,updated_at=now()
+                   WHERE farmer_id=%s AND channel='whatsapp' AND direction='outbound'
+                     AND (status IN ('queued','review') OR kind='verify')""", (farmer,),
             )
             audit(conn, "farmer_unsubscribed", farmer, message["id"])
             return True
@@ -295,18 +347,21 @@ def compute(job, state):
     if ctx.escalation or intent == "escalate":
         reason = "Unsupported or high-risk request"
         body = copy.template(language, "review")
-    elif not selected or intent == "clarify":
-        body = copy.template(language, "clarify")
+    elif not selected:
+        body = copy.template(language, "clarify" if aliases else "no_field")
+    elif intent == "clarify":
+        body = copy.field_message(aliases[selected]["name"], copy.template(language, "clarify_topic"))
     else:
         farm = ctx.owned(selected)
         name = aliases[selected]["name"]
-        evidence = ctx.live(farm)
+        if intent != "profile":
+            evidence = ctx.live(farm)
         if intent == "observation":
             if ctx.proposal and ctx.proposal[0] == selected:
                 observation = ctx.proposal[1].model_dump(mode="json")
                 body = copy.template(language, "observation")
             else:
-                body = copy.template(language, "clarify")
+                body = copy.field_message(name, copy.template(language, "clarify_topic"))
         elif intent == "history":
             records = farms.history(job["farmer_id"], field_id)
             evidence = {**evidence, **records}
@@ -333,6 +388,10 @@ def compute(job, state):
                 )
             else:
                 body = copy.report(language, name, {"missing": ["crop"]})
+        elif intent == "harvest":
+            info = ctx.harvest(farm)
+            evidence = {**evidence, "harvest": info}
+            body = copy.field_message(name, copy.harvest_report(language, info))
         else:
             evidence = ctx.plan(farm)
             if intent == "outlook" and not evidence.get("missing"):
@@ -341,6 +400,13 @@ def compute(job, state):
                 body = copy.report(language, name, evidence, decision.tip)
             if evidence.get("requires_review"):
                 reason = "Forecast hazard, crop stress, salinity, or crop-model limitations"
+            # Proactive harvest alert on scheduled advisories when the crop is ripe and rain threatens.
+            if job["kind"] != "inbound":
+                harvest_info = ctx.harvest(farm)
+                alert = copy.harvest_alert(language, harvest_info)
+                if alert:
+                    body = f"{alert}\n{body}"
+                    evidence = {**evidence, "harvest": harvest_info.get("recommendation")}
     return field_id, language, body, evidence, usage, reason, observation
 
 

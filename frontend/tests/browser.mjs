@@ -7,8 +7,8 @@ const requirePlaywright = createRequire(
 );
 const { chromium } = requirePlaywright("playwright");
 const base = process.env.AQUAPROOF_BROWSER_URL ?? "http://127.0.0.1:5173";
-const officer = process.env.AQUAPROOF_TEST_OFFICER_TOKEN;
-if (!officer) throw new Error("Set AQUAPROOF_TEST_OFFICER_TOKEN for the isolated QA instance.");
+const officer = process.env.AQUAPROOF_TEST_OFFICER_PASSWORD;
+if (!officer) throw new Error("Set AQUAPROOF_TEST_OFFICER_PASSWORD for the isolated QA instance.");
 const runPersistence = process.env.AQUAPROOF_BROWSER_PERSISTENCE === "1";
 const browser = await chromium.launch({
   channel: process.env.AQUAPROOF_BROWSER_CHANNEL ?? "msedge",
@@ -24,8 +24,9 @@ const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 
 async function login() {
-  await page.getByLabel("Officer access token").fill(officer);
+  await page.getByLabel("Officer password").fill(officer);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByLabel("Officer password").waitFor({ state: "hidden" });
 }
 
 try {
@@ -54,7 +55,7 @@ try {
 
   if (runPersistence) {
     const mapConfig = await page.request
-      .get(base + "/api/map/config", { headers: { Authorization: "Bearer " + officer } })
+      .get(base + "/api/map/config")
       .then((response) => response.json());
     const basemap = page.getByRole("combobox", { name: "Basemap", exact: true });
     const street = mapConfig.browser_token || mapConfig.server_basemaps ? "open" : "street";
@@ -103,7 +104,7 @@ try {
     await page.getByRole("button", { name: "Save Farm" }).click({ timeout: 30_000 });
     const modal = page.getByRole("dialog", { name: "Save farm boundary" });
     await modal.getByLabel("Farmer name").fill("QA Farmer " + unique);
-    await modal.getByLabel("WhatsApp phone").fill("03001230000");
+    await modal.getByLabel("WhatsApp phone").fill("030" + unique.slice(-8));
     await modal.getByLabel("Province or region").fill("Punjab");
     await modal.getByLabel("Village").fill("QA village");
     await modal.getByLabel("Field name").fill(name);
@@ -131,7 +132,7 @@ try {
       assert.match(download.suggestedFilename(), new RegExp(`\\.${format.toLowerCase()}$`));
     }
     await page.reload();
-    await login();
+    assert.equal(await page.request.get(base + "/api/registry").then((r) => r.status()), 200);
     await page.getByRole("button", { name: "Edit Boundary" }).waitFor();
     await search.fill(name);
     await search.press("Enter");
@@ -141,7 +142,7 @@ try {
     await page.getByText("ESTIMATED AREA", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Discard changes" }).click();
     const assistant = await page.request
-      .get(base + "/api/assistant/status", { headers: { Authorization: "Bearer " + officer } })
+      .get(base + "/api/assistant/status")
       .then((response) => response.json());
     if (assistant.enabled && assistant.whatsapp_configured && !assistant.whatsapp_worker_enabled) {
       await page.getByRole("button", { name: "AI Advisory Center", exact: true }).click();
@@ -151,9 +152,68 @@ try {
       await page.getByRole("button", { name: "Send WhatsApp verification", exact: true }).click();
       await page.getByText("WhatsApp verification queued.", { exact: true }).waitFor();
       await page.getByText("Awaiting WhatsApp verification", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "WhatsApp Conversations", exact: true }).click();
+      await page.getByRole("heading", { name: "WhatsApp Conversations", exact: true }).waitFor();
+      await page.getByLabel("Farmer", { exact: true }).selectOption(saved.farmer.id);
+      await page.getByText("Farmer verification pending", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Refresh conversation", exact: true }).click();
+      await page.getByText("Refreshed saved conversation.", { exact: true }).waitFor();
+      await page.locator(".whatsapp-message.outbound").waitFor();
+      assert.equal(await page.locator(".whatsapp-message time").count(), 0);
+      assert.equal(await page.locator(".whatsapp-message .chip").count(), 0);
+      await page.getByRole("button", { name: "Open Advisory Center", exact: true }).click();
+      await page.getByText("Awaiting WhatsApp verification", { exact: true }).waitFor();
     }
+    assert.equal(
+      await page.request.delete(base + "/api/fields/" + saved.field.id).then((r) => r.status()),
+      200,
+    );
+    await page.getByRole("button", { name: "Reports & History", exact: true }).click();
+    const archivedField = page.getByRole("listitem").filter({ hasText: name });
+    await archivedField.getByRole("button", { name: "Delete permanently", exact: true }).waitFor();
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await archivedField.getByRole("button", { name: "Delete permanently", exact: true }).click();
+    await archivedField.waitFor();
+    page.once("dialog", (dialog) => dialog.accept("DELETE"));
+    await archivedField.getByRole("button", { name: "Delete permanently", exact: true }).click();
+    await archivedField.waitFor({ state: "hidden" });
+    let sendingState = "WORKING";
+    let unlinkConfirmed = false;
+    await page.route("**/api/assistant/waha/*", async (route) => {
+      const endpoint = new URL(route.request().url()).pathname.split("/").at(-1);
+      if (endpoint === "session") {
+        await route.fulfill({
+          json: {
+            configured: true,
+            state: sendingState,
+            phone: sendingState === "WORKING" ? "923000000001" : null,
+          },
+        });
+      } else if (endpoint === "unlink") {
+        unlinkConfirmed = route.request().postDataJSON().confirmation === "UNLINK";
+        sendingState = "STOPPED";
+        await route.fulfill({ status: 204 });
+      } else if (endpoint === "pair") {
+        sendingState = "SCAN_QR_CODE";
+        await route.fulfill({ status: 204 });
+      } else {
+        await route.fulfill({
+          contentType: "image/png",
+          body: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+            "base64",
+          ),
+        });
+      }
+    });
     await page.getByRole("button", { name: "Settings", exact: true }).first().click();
     await page.getByRole("heading", { name: "External service status" }).waitFor();
+    await page.getByText("Linked sending phone +923000000001", { exact: true }).waitFor();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Unlink sending phone", exact: true }).click();
+    await page.getByRole("button", { name: "Link sending phone", exact: true }).click();
+    await page.getByRole("img", { name: "WhatsApp pairing QR code" }).waitFor();
+    assert.equal(unlinkConfirmed, true);
   }
   await page.setViewportSize({ width: 390, height: 844 });
   await page

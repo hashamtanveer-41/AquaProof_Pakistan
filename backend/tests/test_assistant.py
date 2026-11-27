@@ -11,19 +11,26 @@ from app import (
     assistant_farms,
     assistant_jobs,
     assistant_model,
-    green_api,
+    waha,
 )
-from app.assistant_access import officer_authorized
+from app.officer_auth import authorized, password_hash, signature
 from app.science.crops import local_today
 from app.science.irrigation import IrrigationSettings
 
 
 class AssistantTest(TestCase):
-    def test_officer_gate_requires_a_configured_secret(self):
-        with patch.dict("os.environ", {"ASSISTANT_OFFICER_TOKEN": "a" * 40}):
-            self.assertTrue(officer_authorized("Bearer " + "a" * 40))
-            self.assertFalse(officer_authorized("Bearer " + "b" * 40))
-            self.assertFalse(officer_authorized(None))
+    def test_officer_sessions_reject_expired_and_tampered_cookies(self):
+        verifier, secret = password_hash("synthetic password"), "s" * 40
+        with patch.dict("os.environ", {
+            "AQUAPROOF_OFFICER_PASSWORD_HASH": verifier, "AQUAPROOF_SESSION_SECRET": secret,
+        }), patch("app.officer_auth.time.time", return_value=100):
+            active = "101." + "a" * 24
+            old = "99." + "a" * 24
+            proof = signature(active, verifier, secret)
+            self.assertTrue(authorized(f"{active}.{proof}"))
+            self.assertFalse(authorized(f"{old}.{signature(old, verifier, secret)}"))
+            self.assertFalse(authorized(f"102.{active.split('.')[1]}.{proof}"))
+            self.assertFalse(authorized(None))
 
     def test_unauthorized_tool_arguments_never_query_the_database(self):
         ctx = assistant_model.ToolContext("owner", {"F1": {"id": "own-field"}}, "inbound")
@@ -111,47 +118,63 @@ class AssistantTest(TestCase):
         self.assertEqual(result.intent, "clarify")
         self.assertEqual(result.language, "ur")
         self.assertIn("کھیت", assistant_copy.template(result.language, "clarify"))
-        self.assertIn("Khet", assistant_copy.template("roman_ur", "clarify"))
+        self.assertIn("khet", assistant_copy.template("roman_ur", "clarify").casefold())
 
-    def test_green_api_quoted_message_and_acknowledgement(self):
-        adapter = green_api.GreenAPI("https://api.green-api.com", "1234567890", "qa-only")
-        direct = {"chatId": "923000000001@c.us", "sender": "923000000001@c.us"}
-        message = {
-            "typeWebhook": "incomingMessageReceived", "instanceData": {"idInstance": 1234567890},
-            "idMessage": "qa-message", "senderData": direct,
-            "messageData": {"typeMessage": "quotedMessage", "extendedTextMessageData": {"text": "Pani?"},
-                            "quotedMessage": {"textMessage": "signed quote", "stanzaId": "original"}},
+    def test_fallback_uses_known_field_for_soil_and_greetings(self):
+        aliases = {"F1": {"id": "parcel", "name": "North field"}}
+        ctx = assistant_model.ToolContext("owner", aliases, "inbound")
+        with patch.object(assistant_model, "config", return_value=None):
+            decision = assistant_model.decide(ctx, "Can you describe the soil?", [], "F1", "en", [])
+            self.assertEqual((decision.intent, decision.farm), ("profile", "F1"))
+            reply = assistant_jobs.compute(
+                {"farmer_id": "owner", "kind": "inbound"},
+                ({"language": "en"}, aliases, "F1", "Hi", []),
+            )
+        self.assertEqual(reply[0], "parcel")
+        self.assertIn("North field", reply[2])
+        self.assertIn("What would you like to check", reply[2])
+        self.assertNotIn("which of your fields", reply[2])
+
+    def test_waha_direct_and_linked_quoted_message(self):
+        adapter = waha.WAHA("https://waha.example", "default", "qa-only", "secret")
+        payload = {
+            "id": "false_923000000001@c.us_qa-message", "from": "923000000001@c.us",
+            "fromMe": False, "body": "Pani?", "replyTo": {"body": "signed quote", "id": "true_12345@lid_original"},
         }
-        group = {**message, "senderData": {**direct, "chatId": "group@g.us"}}
-        def response(receipt, body):
-            return httpx.Response(200, json={"receiptId": receipt, "body": body})
+        event = {"session": "default", "event": "message", "payload": payload}
+        self.assertEqual(adapter.incoming_text(event),
+                         ("923000000001", "qa-message", "Pani?", "signed quote", "original"))
+        for disallowed in ({"from": "group@g.us"}, {"fromMe": True}, {"hasMedia": True},
+                           {"from": "status@broadcast"}, {"from": "123@newsletter"}):
+            self.assertIsNone(adapter.incoming_text({**event, "payload": {**payload, **disallowed}}))
+        self.assertIsNone(adapter.incoming_text({**event, "session": "other"}))
+        linked = {**event, "payload": {**payload, "from": "12345@lid"}}
+        with patch.object(waha.httpx, "request", return_value=httpx.Response(
+            200, json={"lid": "12345@lid", "pn": "923000000001@c.us"},
+        )) as request:
+            self.assertEqual(adapter.incoming_text(linked)[0], "923000000001")
+            self.assertTrue(request.call_args.args[1].endswith("/api/default/lids/12345%40lid"))
+        with patch.object(waha.httpx, "request", return_value=httpx.Response(
+            200, json={"lid": "54321@lid", "pn": "923000000001@c.us"},
+        )):
+            self.assertIsNone(adapter.incoming_text(linked))
+        gows = {**linked["payload"], "_data": {"Info": {
+            "Chat": "12345@lid", "Sender": "12345@lid", "SenderAlt": "923000000001@s.whatsapp.net",
+        }}}
+        self.assertEqual(adapter.incoming_text({**linked, "payload": gows})[0], "923000000001")
 
-        consume = Mock()
-        with patch.object(green_api.httpx, "request", side_effect=[
-            response(10, group), httpx.Response(200, json={"result": True}),
-            response(11, message), httpx.Response(200, json={"result": True}),
-            httpx.Response(200, content=b"null"),
-        ]) as request:
-            adapter.receive(consume)
-            self.assertEqual([call.args[0] for call in request.call_args_list],
-                             ["GET", "DELETE", "GET", "DELETE", "GET"])
-        consume.assert_called_once_with("923000000001", "qa-message", "Pani?", "signed quote", "original")
-        id_only = {**message, "messageData": {
-            "typeMessage": "quotedMessage", "extendedTextMessageData": {"text": "بارش؟", "stanzaId": "original"},
-        }}
-        self.assertEqual(green_api.incoming_text(id_only, "1234567890"),
-                         ("923000000001", "qa-message", "بارش؟", None, "original"))
-        with patch.object(green_api.httpx, "request", return_value=response(11, message)) as request:
-            with self.assertRaises(RuntimeError):
-                adapter.receive(Mock(side_effect=RuntimeError))
-            request.assert_called_once()
-
-    def test_green_api_outbound_schema_and_unknown_delivery(self):
-        adapter = green_api.GreenAPI("https://api.green-api.com", "1234567890", "qa-only")
-        with patch.object(green_api.httpx, "request", return_value=httpx.Response(200, json={"idMessage": "out-1"})) as request:
+    def test_waha_outbound_schema_and_unknown_delivery(self):
+        adapter = waha.WAHA("https://waha.example", "default", "qa-only", "secret")
+        with patch.object(waha.httpx, "request", return_value=httpx.Response(
+            201, json={"id": "true_923000000001@c.us_out-1"},
+        )) as request:
             self.assertEqual(adapter.send("923000000001", "Farm question"), "out-1")
-            self.assertEqual(request.call_args.kwargs["json"], {"chatId": "923000000001@c.us", "message": "Farm question"})
-        with patch.object(green_api.httpx, "request", side_effect=httpx.ReadTimeout("private URL")):
-            with self.assertRaisesRegex(green_api.ProviderError, "sendMessage timed out") as error:
+            self.assertEqual(request.call_args.args, ("POST", "https://waha.example/api/sendText"))
+            self.assertEqual(request.call_args.kwargs["headers"]["X-Api-Key"], "qa-only")
+            self.assertEqual(request.call_args.kwargs["json"], {
+                "chatId": "923000000001@c.us", "text": "Farm question", "session": "default", "linkPreview": False,
+            })
+        with patch.object(waha.httpx, "request", side_effect=httpx.ReadTimeout("private URL")):
+            with self.assertRaisesRegex(waha.ProviderError, "sendText timed out") as error:
                 adapter.send("923000000001", "Farm question")
             self.assertNotIn("private URL", str(error.exception))
