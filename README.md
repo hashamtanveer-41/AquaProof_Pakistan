@@ -177,7 +177,7 @@ python -m app.service_health --credential-smoke --probe-model-routes
 python -m tests.live_assistant_smoke
 ```
 
-Set `AQUAPROOF_TEST_DATABASE_URL` to a disposable PostGIS database whose name begins with `aquaproof_test` to run the migration, row isolation, PostGIS, WhatsApp adapter and scheduler tests. The live assistant smoke command uses a dedicated QA database, synthetic farm and forecast fixtures, and the configured OpenRouter provider. It does not transmit WhatsApp messages.
+Set `AQUAPROOF_TEST_DATABASE_URL` to a disposable PostGIS database whose name begins with `aquaproof_test` to run the migration, row isolation, PostGIS, WhatsApp adapter and scheduler tests. The live assistant smoke command uses a dedicated QA database, synthetic farm and forecast fixtures, and the configured Groq model. It does not transmit WhatsApp messages.
 
 ```sh
 cd frontend
@@ -192,8 +192,6 @@ For browser tests, install Playwright in an ignored QA directory from the projec
 
 Use HTTPS and a government identity-aware gateway that accounts for individual officers, restrict the service to approved networks, and use a secret store and managed backups. Keep the default Compose database private. Use one scheduled API worker until there is shared provider health storage and a separately deployed scheduler. Validate restores and apply migrations in a staging database first. PostgreSQL migration access must support creating the PostGIS extension, tables, policies and assistant reader role. For a separate production runtime login, grant application DML, sequence access and membership in the restricted assistant reader role. Keep the migration role separate from runtime infrastructure.
 
-Regional cultivar calibration, district water allocation data, a permitted satellite credential, and a controlled WhatsApp test number remain deployment inputs. The current optimizer is a short-horizon soil-water balance. It has no validated local yield model, paddy water model, live canal telemetry, or individually attributed officer accounts. See [project memory](CLAUDE.md).
-
 ## License
 
-AquaProof is released under the [MIT License](LICENSE). The crop and irrigation model is adapted from the PI-Advisor project (MIT) and FAO-56 / CROPWAT published methods; see [scientific rules](backend/app/science/CLAUDE.md) and `backend/app/science/PI-Advisor-LICENSE.txt` for attribution. Third-party data and map providers (OpenWeather, Open-Meteo, NASA POWER, ArcGIS, OpenRouter, WAHA) remain under their own terms.
+AquaProof is released under the [MIT License](LICENSE). The crop and irrigation model is adapted from the PI-Advisor project (MIT) and FAO-56 / CROPWAT published methods; see [scientific rules](backend/app/science/CLAUDE.md) and `backend/app/science/PI-Advisor-LICENSE.txt` for attribution. Third-party data and map providers (OpenWeather, Open-Meteo, NASA POWER, ArcGIS, Groq, WAHA) remain under their own terms.
