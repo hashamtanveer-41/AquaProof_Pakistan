@@ -1548,6 +1548,21 @@ fieldset.form-grid legend {
 form .form-grid + .button {
   margin-block-start: 10px;
 }
+/* Advanced override toggle sits on its own line; the submit button clears it instead of
+   crowding against the checkbox label. */
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block: 14px 0;
+  font-size: 12.5px;
+}
+.checkbox-line input {
+  flex-shrink: 0;
+}
+.checkbox-line + .button {
+  margin-block-start: 14px;
+}
 .live-message {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -1917,4 +1932,64 @@ form .form-grid + .button {
 .water-missing {
   display: block;
   margin-block-start: 0.35rem;
+}
+
+/* Demo login gate (admin / admin) shown before the workspace loads. */
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: linear-gradient(160deg, #0f3d2b 0%, #10492f 45%, #0b2f22 100%);
+}
+.login-card {
+  width: min(380px, 100%);
+  display: grid;
+  gap: 12px;
+  background: #fff;
+  border-radius: 14px;
+  padding: 28px 26px;
+  box-shadow: 0 18px 50px #00000030;
+}
+.login-card h1 {
+  margin: 8px 0 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #103c2b;
+}
+.login-sub {
+  margin: 0 0 6px;
+  color: #5b6b63;
+  font-size: 12.5px;
+}
+.login-card label {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #2e4439;
+}
+.login-card input {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 10px;
+  min-height: 40px;
+  font-size: 13px;
+}
+.login-card .button.primary {
+  margin-top: 4px;
+  min-height: 42px;
+}
+.login-error {
+  color: #b42318;
+  font-size: 12px;
+}
+.login-hint {
+  margin-top: 2px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #eef6f1;
+  color: #2e4439;
+  font-size: 12px;
+  text-align: center;
 }

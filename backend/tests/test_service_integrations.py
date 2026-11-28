@@ -18,6 +18,7 @@ class HttpIntegrationTests(TestCase):
         path = "/api/assistant/waha"
         with (
             patch.dict(os.environ, {
+                "AQUAPROOF_REQUIRE_LOGIN": "1",
                 "AQUAPROOF_OFFICER_PASSWORD_HASH": officer_auth.password_hash(password),
                 "AQUAPROOF_SESSION_SECRET": "s" * 40,
             }, clear=True),
@@ -41,6 +42,7 @@ class HttpIntegrationTests(TestCase):
         password = "synthetic officer test"
         with patch.dict(os.environ, {
             "ASSISTANT_ENABLED": "0",
+            "AQUAPROOF_REQUIRE_LOGIN": "1",
             "AQUAPROOF_OFFICER_PASSWORD_HASH": officer_auth.password_hash(password),
             "AQUAPROOF_SESSION_SECRET": "s" * 40,
         }, clear=True):
@@ -108,7 +110,8 @@ class HttpIntegrationTests(TestCase):
 
     def test_arcgis_tile_relay_uses_only_the_fixed_provider_endpoints(self):
         with (
-            patch.dict(os.environ, {"ARCGIS_API_KEY": "fixture-only", "ARCGIS_SERVER_BASEMAPS": "1"}, clear=True),
+            patch.dict(os.environ, {"ARCGIS_API_KEY": "fixture-only", "ARCGIS_SERVER_BASEMAPS": "1",
+                                    "AQUAPROOF_REQUIRE_LOGIN": "1"}, clear=True),
             patch.object(arcgis._assets, "get", return_value=httpx.Response(
                 200, content=b"test tile", headers={"Content-Type": "image/jpeg"},
             )) as upstream,

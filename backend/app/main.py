@@ -73,7 +73,7 @@ app.include_router(officer_auth.router)
 @app.middleware("http")
 async def prevent_cached_api_responses(request: Request, call_next):
     path = request.url.path
-    if path == "/api" or path.startswith("/api/"):
+    if (path == "/api" or path.startswith("/api/")) and officer_auth.login_required():
         no_cache = {"Cache-Control": "no-store"}
         if not officer_auth.trusted_write(request):
             return JSONResponse({"detail": "Use the AquaProof site for this action."}, status_code=403,

@@ -105,6 +105,12 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [rtl, setRtl] = useState(false);
   const [large, setLarge] = useState(false);
+  const [unlocked, setUnlocked] = useState(
+    () => sessionStorage.getItem("aquaproof-demo-auth") === "1",
+  );
+  const [loginUser, setLoginUser] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [loginError, setLoginError] = useState("");
   const timeout = useRef<number>(undefined);
   const search = useRef<HTMLInputElement>(null);
   const field = fields.find((f) => f.id === fieldId);
@@ -314,6 +320,59 @@ export default function App() {
     : [];
   function toggleMenu(id: string) {
     setMenu((old) => (old === id ? "" : id));
+  }
+  if (!unlocked) {
+    return (
+      <div className="login-screen">
+        <form
+          className="login-card"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (loginUser.trim().toLowerCase() === "admin" && loginPass === "admin") {
+              sessionStorage.setItem("aquaproof-demo-auth", "1");
+              setLoginError("");
+              setUnlocked(true);
+            } else {
+              setLoginError("Invalid username or password.");
+            }
+          }}
+        >
+          <Brand />
+          <h1>AquaProof Pakistan</h1>
+          <p className="login-sub">Agriculture Officer Workspace</p>
+          <label>
+            Username
+            <input
+              value={loginUser}
+              onChange={(e) => setLoginUser(e.target.value)}
+              autoComplete="username"
+              autoFocus
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={loginPass}
+              onChange={(e) => setLoginPass(e.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          <button className="button primary" type="submit">
+            Sign in
+          </button>
+          {loginError && (
+            <span className="login-error" role="alert">
+              {loginError}
+            </span>
+          )}
+          <div className="login-hint">
+            Demo login — Username: <strong>admin</strong> &nbsp;·&nbsp; Password:{" "}
+            <strong>admin</strong>
+          </div>
+        </form>
+      </div>
+    );
   }
   return (
     <div className={`app ${large ? "large-text" : ""}`} dir={rtl ? "rtl" : "ltr"}>

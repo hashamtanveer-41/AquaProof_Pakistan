@@ -28,6 +28,12 @@ def password_hash(password, salt=None):
     return f"{salt.hex()}:{digest.hex()}"
 
 
+def login_required():
+    # Officer sign-in is opt-in. By default the workspace opens without a password so the software
+    # starts right away (demo/hackathon friendly). Set AQUAPROOF_REQUIRE_LOGIN=1 to restore the gate.
+    return os.getenv("AQUAPROOF_REQUIRE_LOGIN", "0") == "1"
+
+
 def config():
     verifier = os.getenv("AQUAPROOF_OFFICER_PASSWORD_HASH", "")
     secret = os.getenv("AQUAPROOF_SESSION_SECRET", "")

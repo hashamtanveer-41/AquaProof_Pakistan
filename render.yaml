@@ -15,16 +15,19 @@ services:
       # --- Database (Supabase connection string, Session pooler, append ?sslmode=require) ---
       - key: DATABASE_URL
         sync: false
-      # --- Officer sign-in (generate with `python -m app.officer_auth`) ---
-      - key: AQUAPROOF_OFFICER_PASSWORD_HASH
-        sync: false
-      - key: AQUAPROOF_SESSION_SECRET
-        generateValue: true
-      - key: AQUAPROOF_SECURE_COOKIES
-        value: "1"
-      # --- Allowed browser origin(s): your Vercel site, comma-separated, no trailing slash ---
-      - key: CORS_ORIGINS
-        sync: false
+      # --- Officer sign-in is OFF by default, so the workspace opens with no password. ---
+      # To require a password instead, set AQUAPROOF_REQUIRE_LOGIN=1 and provide the hash
+      # (generate with `cd backend && python -m app.officer_auth`) plus a session secret.
+      - key: AQUAPROOF_REQUIRE_LOGIN
+        value: "0"
+      # - key: AQUAPROOF_OFFICER_PASSWORD_HASH
+      #   sync: false
+      # - key: AQUAPROOF_SESSION_SECRET
+      #   generateValue: true
+      # - key: AQUAPROOF_SECURE_COOKIES
+      #   value: "1"
+      # - key: CORS_ORIGINS   # only needed when login is required (write-origin allowlist)
+      #   sync: false
       # --- Assistant model (Groq, OpenAI-compatible) ---
       - key: GROQ_API_KEY
         sync: false

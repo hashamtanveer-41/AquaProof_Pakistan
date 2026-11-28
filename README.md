@@ -18,13 +18,13 @@ The problem and priorities were defined by surveying farmers in Pakistan — **S
 
 ## Local setup
 
-Docker Compose runs the React web app, the FastAPI backend, and PostgreSQL 16 with PostGIS. Copy `.env.example` to `.env` for a new installation. Keep an existing `.env` and merge the new variable names into it. Fill in a database password. Run `python -m app.officer_auth` from `backend` to choose an officer password and generate its hash. Copy the resulting setting into `.env` and set `AQUAPROOF_SESSION_SECRET` to a separate random value of at least 32 characters.
+Docker Compose runs the React web app, the FastAPI backend, and PostgreSQL 16 with PostGIS. Copy `.env.example` to `.env` for a new installation. Keep an existing `.env` and merge the new variable names into it. Fill in a database password. The workspace opens without a login by default. To require an officer password, set `AQUAPROOF_REQUIRE_LOGIN=1`, run `python -m app.officer_auth` from `backend` to choose a password and generate its hash, copy that setting into `.env`, and set `AQUAPROOF_SESSION_SECRET` to a separate random value of at least 32 characters.
 
 ```sh
 docker compose up --build
 ```
 
-Open `http://127.0.0.1:8080` and sign in with the officer password. The browser session lasts 14 days and survives reloads and browser restarts. To end your session, choose **Sign out** from the officer profile.
+Open `http://127.0.0.1:8080`; the workspace loads straight away. If you enabled `AQUAPROOF_REQUIRE_LOGIN=1`, sign in with the officer password — that browser session lasts 14 days and survives reloads and browser restarts, and you can end it from **Sign out** in the officer profile.
 
 The API applies migrations on startup and retains data in the Compose volume. Use `docker compose down` to stop the services. Preserve the database volume and back it up before upgrades. Migrations 010 and 011 add WhatsApp enrollment and separate its queue from historical email records. Migration 012 sets Urdu as the default for new enrollments. Migration 013 records the WhatsApp transport and indexes conversation history.
 
@@ -68,9 +68,8 @@ Never commit secrets. `.env` is git-ignored; set every secret in the Supabase/Re
 1. In Render choose **New + → Blueprint** and select this repository and the deploy branch. Render reads `render.yaml` and provisions the `aquaproof-api` Docker web service (build context `backend/`). The container runs migrations and then `uvicorn` on Render's `$PORT`; `/health` is the health check.
 2. Fill the environment values Render prompts for (the ones marked `sync:false`):
    - `DATABASE_URL` — the Supabase Session-pooler URI with `?sslmode=require`.
-   - `AQUAPROOF_OFFICER_PASSWORD_HASH` — generate locally with `cd backend && python -m app.officer_auth` and paste the printed `AQUAPROOF_OFFICER_PASSWORD_HASH=...` value. (`AQUAPROOF_SESSION_SECRET` is generated for you; `AQUAPROOF_SECURE_COOKIES` is already `1`.)
-   - `CORS_ORIGINS` — your Vercel site origin, e.g. `https://your-app.vercel.app` (no trailing slash). Required so officer writes from the Vercel-served UI are accepted.
    - `GROQ_API_KEY`, `OPENWEATHER_API_KEY`, `ARCGIS_API_KEY` — provider credentials.
+   - Login is off by default, so no officer password is needed. To require one, set `AQUAPROOF_REQUIRE_LOGIN=1`, add `AQUAPROOF_OFFICER_PASSWORD_HASH` (from `cd backend && python -m app.officer_auth`), `AQUAPROOF_SESSION_SECRET`, `AQUAPROOF_SECURE_COOKIES=1`, and `CORS_ORIGINS=https://your-app.vercel.app` (write-origin allowlist).
    - WhatsApp (`WAHA_*`) only when a WAHA session is provisioned; leave `ASSISTANT_ENABLED` and `AQUAPROOF_BACKGROUND_WHATSAPP` at `0` until then.
 3. Deploy and note the service URL, e.g. `https://aquaproof-api.onrender.com`.
 
@@ -79,7 +78,7 @@ Never commit secrets. `.env` is git-ignored; set every secret in the Supabase/Re
 1. In `frontend/vercel.json`, replace `REPLACE-WITH-YOUR-RENDER-URL.onrender.com` with your Render backend host. This rewrite forwards `/api/*` to the backend; the SPA fallback serves client-side routes.
 2. In Vercel **New Project**, import this repository and set the **Root Directory** to `frontend`. The Vite framework preset, pnpm install and build come from `frontend/vercel.json`.
 3. Leave `VITE_API_URL` empty (the app calls `/api` on its own origin). Optionally set `VITE_MAP_TILES` to a public street-tile URL.
-4. Deploy. Open the Vercel URL and sign in with the officer password. Confirm the Render `CORS_ORIGINS` matches this exact Vercel origin.
+4. Deploy. Open the Vercel URL — the workspace loads straight away (no login by default). If you set `AQUAPROOF_REQUIRE_LOGIN=1`, sign in with the officer password and make sure the Render `CORS_ORIGINS` matches this exact Vercel origin.
 
 After the first backend boot the Supabase database holds the full schema; drawing and saving a field persists its boundary polygon, representative point and area via PostGIS, and crop, irrigation, weather-decision and WhatsApp records accumulate from there.
 
