@@ -137,7 +137,9 @@ def deliver():
         except ProviderError:
             return
         message_id, farmer_id = row["id"], row["farmer_id"]
-        if not delivery_evidence_is_current(row["evidence"]):
+        # Only proactive scheduled advisories must carry fresh weather numbers; an inbound answer or a
+        # verification/receipt message is not gated on weather-evidence currency.
+        if row["kind"] in ("daily", "correction") and not delivery_evidence_is_current(row["evidence"]):
             conn.execute(
                 """UPDATE assistant_messages SET status='review',review_reason='Weather evidence expired',
                           updated_at=now() WHERE id=%s""", (message_id,),

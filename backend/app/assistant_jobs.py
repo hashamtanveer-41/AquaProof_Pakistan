@@ -456,8 +456,9 @@ def compute(job, state):
         facts, evidence = full_context(ctx, selected, aliases[selected]["name"], language)
         facts["known_fields"] = [aliases[alias]["name"] for alias in aliases]
         body = explain(facts)
-        if not evidence.get("missing") and evidence.get("requires_review"):
-            reason = "Forecast hazard, crop stress, salinity, or crop-model limitations"
+        # The answer is delivered to the farmer directly. The field is only routed to the officer
+        # when the farmer asks for it (intent 'escalate') or reports a hazard (handled above), not
+        # because the model's own irrigation plan flags crop stress or a forecast risk.
     return field_id, language, body, evidence, usage, reason, observation
 
 

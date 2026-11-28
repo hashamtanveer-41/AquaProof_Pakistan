@@ -56,7 +56,6 @@ services:
       db:
         condition: service_healthy
   waha:
-    profiles: ["waha"]
     image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
     ports:
       - "127.0.0.1:${WAHA_PORT:-3000}:3000"
