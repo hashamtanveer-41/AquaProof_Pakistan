@@ -6,7 +6,7 @@
  *
  * CONTACT_URL: optional mailto: or web link for the team. Hidden while null.
  */
-export const DEMO_URL: string | null = 'https://aqua-proof-pakistan-sage.vercel.app/'
+export const DEMO_URL: string | null = 'https://aqua-proof-pakistan-td2s.vercel.app/'
 export const CONTACT_URL: string | null = null
 export const REPO_URL = 'https://github.com/hashamtanveer-41/AquaProof_Pakistan'
 export const GROUNDWATER_SOURCE = 'https://www.worldbank.org/en/news/feature/2021/03/25/managing-groundwater-resources-in-pakistan-indus-basin'
