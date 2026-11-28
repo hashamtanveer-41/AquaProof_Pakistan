@@ -25,11 +25,11 @@ COPY = {
         "missing": {"crop": "Confirm crop and planting date.", "measurements": "Ask the officer to record current soil-water measurements.",
                     "supply": "Confirm canal or pump availability and measured flow.", "weather": "Reliable current forecasts are unavailable.",
                     "season": "Confirm that the crop is still in season."},
-        "no_water": "Today's model does not recommend additional irrigation. Check actual soil moisture before changing your schedule.",
+        "no_water": "Today's model does not recommend extra irrigation at this stage.",
         "turn": "Use canal water only during your registered Warabandi turn.",
-        "weather": ("Rain is forecast. Recheck the forecast and field moisture before watering.",
-                    "The forecast shows no rain. Check the root-zone soil before watering.",
-                    "The forecast does not give a clear rain outlook. Check the soil before deciding."),
+        "weather": ("Rain is forecast.",
+                    "No rain is forecast.",
+                    "The rain outlook is unclear."),
         "weather_risks": {"heat": "Very hot weather is possible. Check the crop for wilting in the cooler part of the day.",
                           "frost": "Frost is possible. Check sheltered and low-lying patches for damage.",
                           "heavy_rain": "Heavy rain is possible. Clear field drains where it is safe to do so."},
@@ -61,11 +61,11 @@ COPY = {
         "missing": {"crop":"فصل اور بوائی کی تاریخ بتائیں۔", "measurements":"افسر سے مٹی میں موجود پانی کی تازہ پیمائش درج کروائیں۔",
                     "supply":"نہری یا ٹیوب ویل کے پانی اور بہاؤ کی تصدیق کریں۔", "weather":"تازہ قابل اعتماد موسم دستیاب نہیں۔",
                     "season":"تصدیق کریں کہ فصل ابھی موسم میں ہے۔"},
-        "no_water": "آج کے حساب کے مطابق اضافی آبپاشی درکار نہیں ہے۔ شیڈول بدلنے سے پہلے مٹی کی نمی دیکھیں۔",
+        "no_water": "آج کے حساب کے مطابق اس مرحلے پر اضافی آبپاشی درکار نہیں ہے۔",
         "turn": "نہری پانی صرف درج شدہ وارہ بندی کی باری میں استعمال کریں۔",
-        "weather": ("بارش متوقع ہے۔ پانی لگانے سے پہلے تازہ پیش گوئی اور کھیت کی نمی دوبارہ دیکھیں۔",
-                    "پیش گوئی میں بارش متوقع نہیں۔ پانی لگانے سے پہلے جڑوں کے پاس مٹی کی نمی دیکھیں۔",
-                    "پیش گوئی میں بارش کی صورتِ حال واضح نہیں۔ فیصلہ کرنے سے پہلے مٹی کی نمی دیکھیں۔"),
+        "weather": ("بارش متوقع ہے۔",
+                    "پیش گوئی میں بارش متوقع نہیں۔",
+                    "پیش گوئی میں بارش کی صورتِ حال واضح نہیں۔"),
         "weather_risks": {"heat": "شدید گرمی کا امکان ہے۔ دن کے ٹھنڈے وقت دیکھیں کہ فصل مرجھا تو نہیں رہی۔",
                           "frost": "پالا پڑ سکتا ہے۔ کھیت کے نشیبی حصوں میں فصل کو نقصان کے لیے دیکھیں۔",
                           "heavy_rain": "تیز بارش کا امکان ہے۔ جہاں محفوظ ہو وہاں نکاسی کے راستے صاف رکھیں۔"},
@@ -97,11 +97,11 @@ COPY = {
         "missing": {"crop":"Fasal aur buwai ki tareekh batayein.", "measurements":"Officer se mitti ke pani ki nayi paimaish darj karwayein.",
                     "supply":"Nehri ya tubewell ka pani aur bahaao tasdeeq karein.", "weather":"Bharosemand taza mausam dastiyab nahin.",
                     "season":"Tasdeeq karein ke fasal abhi season mein hai."},
-        "no_water": "Aaj ke hisaab mein mazeed pani ki zaroorat nahin. Schedule badalne se pehle mitti ki nami dekhein.",
+        "no_water": "Aaj ke hisaab mein is marhale par mazeed pani ki zaroorat nahin.",
         "turn": "Nehri pani sirf darj shuda warabandi ki bari mein lagayein.",
-        "weather": ("Barish mutawaqqa hai. Pani lagane se pehle taza peshgoi aur khet ki nami dobara dekhein.",
-                    "Peshgoi mein barish mutawaqqa nahin. Pani se pehle jarron ke paas mitti ki nami dekhein.",
-                    "Peshgoi mein barish ki surat-e-haal wazeh nahin. Faislay se pehle mitti ki nami dekhein."),
+        "weather": ("Barish mutawaqqa hai.",
+                    "Peshgoi mein barish mutawaqqa nahin.",
+                    "Peshgoi mein barish ki surat-e-haal wazeh nahin."),
         "weather_risks": {"heat": "Sakht garmi mumkin hai. Thanday waqt dekhein ke fasal murjha to nahin rahi.",
                           "frost": "Pala par sakta hai. Khet ke neechay walay hisson mein nuqsan dekhein.",
                           "heavy_rain": "Tez barish mumkin hai. Jahan mehfooz ho nikaas ke rastay saaf rakhein."},
@@ -175,26 +175,88 @@ def profile_report(language, profile):
     return "\n".join([*lines, COPY[language]["tips"]["check_soil"]])
 
 
-def report(language, farm_name, evidence, tip="none"):
+AREA_M2_PER_ACRE = 4046.8564224
+
+# Deterministic number line used only when the language model is unavailable. The model-composed
+# reply is the normal path; this keeps a factual, number-rich fallback with no soil-check filler.
+NUMBERS = {
+    "en": "Today ({plan}): canal {canal} m³, tubewell {pump} m³ (~{hours} h ≈ {pkr} PKR). "
+          "Crop water need {etc} mm vs forecast rain {rain} mm.",
+    "ur": "آج ({plan}): نہر {canal} m³، ٹیوب ویل {pump} m³ (~{hours} گھنٹے ≈ {pkr} روپے)۔ "
+          "فصل کی پانی کی ضرورت {etc} ملی میٹر، پیش گوئی بارش {rain} ملی میٹر۔",
+    "roman_ur": "Aaj ({plan}): nehar {canal} m³, tubewell {pump} m³ (~{hours} ghante ≈ {pkr} PKR). "
+                "Fasal ki pani zaroorat {etc} mm, forecast barish {rain} mm.",
+}
+
+
+def _num(value):
+    if value is None:
+        return "—"
+    return f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def numbers_line(language, evidence):
+    today, plan = evidence["today"], evidence["plan"]
+    pump = evidence.get("pump") or {}
+    return NUMBERS[language].format(
+        plan=plan["recommended"], canal=_num(today["canal_m3"]), pump=_num(today["pump_m3"]),
+        hours=_num(pump.get("hours")), pkr=_num(pump.get("pkr")),
+        etc=_num(round(today["crop_et_mm"], 1)), rain=_num(round(today["rain_mm"], 1)))
+
+
+def answer_facts(name, language, evidence):
+    """Structured, deterministic facts handed to the language model so it can explain the
+    irrigation decision and answer number questions without inventing any value."""
+    today, plan = evidence["today"], evidence["plan"]
+    settings = (evidence.get("farm_inputs") or {}).get("settings") or {}
+    pump = evidence.get("pump") or {}
+    horizon = plan["plans"][plan["recommended"]]["daily"][:5]
+    return {
+        "field_name": name,
+        "crop": plan.get("crop"),
+        "growth_stage": stage_name(language, today["stage"]),
+        "field_area_acres": round((evidence.get("farm_inputs") or {}).get("area_m2", 0) / AREA_M2_PER_ACRE, 2),
+        "weather_source": evidence["forecast"].get("source"),
+        "today": {
+            "crop_water_need_mm": round(today["crop_et_mm"], 1),
+            "forecast_rain_mm": round(today["rain_mm"], 1),
+            "max_temp_c": today.get("max_c"),
+            "rain_probability_pct": today.get("precip_probability_pct"),
+        },
+        "soil_water": {
+            "total_available_water_mm": settings.get("taw_mm"),
+            "readily_available_water_mm": round(plan["readily_available_mm"], 1),
+            "current_depletion_mm": round(today["depletion_mm"], 1),
+            "guidance": "Irrigate before depletion exceeds readily_available_water_mm to avoid crop stress.",
+        },
+        "recommendation_today": {
+            "best_plan": plan["recommended"],
+            "canal_water_m3": today["canal_m3"],
+            "tubewell_water_m3": today["pump_m3"],
+            "tubewell_run_hours": pump.get("hours"),
+            "tubewell_cost_pkr": pump.get("pkr"),
+            "canal_use_hours": evidence.get("canal_use_hours"),
+            "unmet_crop_water_mm": round(today["unmet_et_mm"], 1),
+        },
+        "warabandi_canal_turn": evidence.get("canal"),
+        "next_days_rain_mm": [round(day["rain_mm"], 1) for day in horizon],
+        "sensitive_to_no_rain": evidence.get("uncertain_rain"),
+        "risks": evidence.get("risks") or [],
+        "source_note": "Weather is a forecast and soil-water figures are modeled FAO-56 estimates.",
+    }
+
+
+def report(language, farm_name, evidence):
     copy = COPY[language]
     if evidence.get("missing"):
         content = " ".join(copy["missing"][key] for key in evidence["missing"])
-        return field_message(farm_name, f"{copy['missing_prefix']} {content} {copy['tips']['check_soil']}")
+        return field_message(farm_name, f"{copy['missing_prefix']} {content}")
     today = evidence["today"]
     name = f"{farm_name} · {stage_name(language, today['stage'])}"
-    data = evidence["forecast"]["daily"][0]
-    forecast = weather_report(language, data)
+    forecast = weather_report(language, evidence["forecast"]["daily"][0])
     if not today["canal_m3"] and not today["pump_m3"]:
-        precaution = copy["tips"].get(tip)
-        return field_message(name, f"{copy['no_water']}\n{forecast}" + (f"\n{precaution}" if precaution else ""))
-    pieces = [forecast]
-    if today["canal_m3"]:
-        pieces.append(copy["turn"])
-    if today["pump_m3"] and evidence["pump"]:
-        pieces.append(copy["pump"])
-    if tip in copy["tips"]:
-        pieces.append(copy["tips"][tip])
-    return field_message(name, "\n".join(pieces))
+        return field_message(name, f"{copy['no_water']}\n{forecast}")
+    return field_message(name, f"{forecast}\n{numbers_line(language, evidence)}")
 
 
 # Codes that warrant a proactive line in a scheduled advisory (the crop is ripe enough to act).

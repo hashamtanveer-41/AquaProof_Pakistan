@@ -146,7 +146,7 @@ export function AssistantMonitor({ field }: { field: Field }) {
       {enabled && (
         <>
           {!configured && (
-            <p>OpenRouter routing is unconfigured. The assistant uses verified templates.</p>
+            <p>Groq model access is unconfigured. The assistant uses verified templates.</p>
           )}
           {monitor ? (
             <>

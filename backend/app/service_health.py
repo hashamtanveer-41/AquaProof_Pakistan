@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from threading import Lock
-from time import monotonic
+from time import monotonic, sleep
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException
@@ -88,20 +88,19 @@ def http_metadata(response):
     return {"http_status": response.status_code, "rate_limit": quotas}
 
 
-def openrouter():
-    required("OPENROUTER_API_KEY")
-    key = os.environ["OPENROUTER_API_KEY"]
-    data, response = request_json("GET", "https://openrouter.ai/api/v1/key",
+def groq():
+    required("GROQ_API_KEY")
+    key = os.environ["GROQ_API_KEY"]
+    data, response = request_json("GET", "https://api.groq.com/openai/v1/models",
                                   headers={"Authorization": f"Bearer {key}"})
-    account = checked(data.get("data"), lambda row: isinstance(row, dict), "OpenRouter key schema invalid")
-    return {**http_metadata(response), "quota_remaining_usd": weather.number(account.get("limit_remaining")),
-            "usage_usd": weather.number(account.get("usage"))}
+    models = checked(data.get("data"), lambda row: isinstance(row, list), "Groq model list schema invalid")
+    return {**http_metadata(response), "models_available": len(models)}
 
 
-def openrouter_completion():
+def groq_completion():
     settings = assistant_model.config()
     if not settings:
-        raise ProviderError("Missing OPENROUTER_API_KEY or approved OpenRouter providers")
+        raise ProviderError("Missing GROQ_API_KEY or model")
     model = settings[1]
     usage = []
     message = assistant_model.request_model(None, [{"role": "user", "content": "Return the JSON object with ok set to true."}],
@@ -110,7 +109,7 @@ def openrouter_completion():
                 "ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False},
         }})
     if message.get("content") is None or json.loads(message["content"]) != {"ok": True}:
-        raise ProviderError("OpenRouter structured output did not match the probe")
+        raise ProviderError("Groq structured output did not match the probe")
     tool = assistant_model.request_model(None, [
         {"role": "user", "content": "Call the health_check function with no arguments."},
     ], usage, tools=[{"type": "function", "function": {
@@ -118,7 +117,7 @@ def openrouter_completion():
     }}], tool_choice={"type": "function", "function": {"name": "health_check"}})
     calls = tool.get("tool_calls")
     if not isinstance(calls, list) or len(calls) != 1 or calls[0].get("function", {}).get("name") != "health_check":
-        raise ProviderError("OpenRouter did not return the specified function call")
+        raise ProviderError("Groq did not return the specified function call")
     return {"http_status": 200, "model": model, "structured_output": True, "function_call": True}
 
 
@@ -127,8 +126,29 @@ def whatsapp():
     service = waha.settings()
     if not service:
         raise ProviderError("Invalid WAHA URL, session or credentials")
-    state, status = service.state()
-    return {"ok": state == "WORKING", "http_status": status, "detail": f"WAHA session: {state}"}
+    # A paired session persists in the WAHA volume and reconnects on restart, passing briefly through
+    # STARTING. Treat that reconnection window as healthy, restart a session WAHA left STOPPED/FAILED,
+    # and tolerate a transient connection miss, so a probe never flaps to "degraded" for a temporary
+    # state. Only an unpaired (SCAN_QR_CODE) or unreachable session is reported unhealthy.
+    state = status = None
+    for attempt in range(3):
+        try:
+            state, status = service.state()
+        except waha.RetryBeforeSend:
+            if attempt == 2:
+                raise
+            sleep(1.5)
+            continue
+        if state in ("STOPPED", "FAILED") and attempt < 2:
+            try:
+                service.start_pairing()
+            except ProviderError:
+                pass
+            sleep(1.5)
+            continue
+        break
+    return {"ok": state in ("WORKING", "STARTING"), "http_status": status,
+            "detail": f"WAHA session: {state}"}
 
 
 def raster(url):
@@ -175,8 +195,8 @@ def services():
         yield "ArcGIS geocoding", f"{arcgis.GEOCODE}/{path}", lambda path=path: geocoding(path)
     for path in arcgis.STYLE_NAMES.values():
         yield "ArcGIS basemap styles", f"{arcgis.STYLES}/{path}", lambda path=path: arcgis_style(path)
-    yield "OpenRouter", "https://openrouter.ai/api/v1/key", openrouter
-    yield "OpenRouter", assistant_model.ENDPOINT, openrouter_completion
+    yield "Groq", "https://api.groq.com/openai/v1/models", groq
+    yield "Groq", assistant_model.ENDPOINT, groq_completion
     yield "WAHA WhatsApp", "GET /api/sessions/{session}", whatsapp
     yield "OpenFreeMap", "https://tiles.openfreemap.org/styles/liberty", lambda: (
         {"ok": request_json("GET", "https://tiles.openfreemap.org/styles/liberty")[0].get("version") == 8})
@@ -224,6 +244,24 @@ def run_checks():
     return results
 
 
+def refresh_whatsapp():
+    """Re-probe only the WAHA session frequently so its status stays current between the 30-minute
+    full sweeps. The probe self-heals a stopped session and tolerates reconnection, so WhatsApp does
+    not sit on a stale "degraded" after a restart."""
+    if not waha.settings():
+        return
+    result = probe(("WAHA WhatsApp", "GET /api/sessions/{session}", whatsapp))
+    with _lock:
+        services = _snapshot.setdefault("services", [])
+        for index, item in enumerate(services):
+            if item.get("provider") == "WAHA WhatsApp":
+                services[index] = result
+                break
+        else:
+            services.append(result)
+    return result
+
+
 @router.get("/services")
 def service_status():
     with _lock:
@@ -238,27 +276,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--credential-smoke", action="store_true")
     parser.add_argument("--probe-model-routes", action="store_true",
-                        help="Also test alternate providers using only synthetic requests.")
+                        help="Also test alternate models using only synthetic requests.")
     args = parser.parse_args()
     if args.credential_smoke:
         os.environ["ARCGIS_API_KEY"] = getpass("ArcGIS key (hidden): ").strip()
-        os.environ["OPENROUTER_API_KEY"] = getpass("OpenRouter key (hidden): ").strip()
-        os.environ.setdefault("OPENROUTER_APPROVED_PROVIDERS", "OpenAI")
+        os.environ["GROQ_API_KEY"] = getpass("Groq key (hidden): ").strip()
         selected = []
         for provider, endpoint, check in services():
             if provider == "ArcGIS basemap styles":
                 path = endpoint.removeprefix(arcgis.STYLES + "/")
                 check = partial(arcgis_style, path, os.environ["ARCGIS_API_KEY"])
-            if provider in ("ArcGIS basemap styles", "ArcGIS geocoding", "OpenRouter"):
+            if provider in ("ArcGIS basemap styles", "ArcGIS geocoding", "Groq"):
                 selected.append((provider, endpoint, check))
         print(json.dumps([probe(item) for item in selected], indent=2))
         if args.probe_model_routes:
-            for model, provider in (("openai/gpt-4o", "Azure"), ("openai/gpt-4.1", "OpenAI"),
-                                    ("openai/gpt-4.1", "Azure")):
-                os.environ["OPENROUTER_MODEL"] = model
-                os.environ["OPENROUTER_APPROVED_PROVIDERS"] = provider
-                print(json.dumps({"model": model, "route": provider, **probe(
-                    ("OpenRouter", assistant_model.ENDPOINT, openrouter_completion)
+            for model in ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "moonshotai/kimi-k2-instruct"):
+                os.environ["GROQ_MODEL"] = model
+                print(json.dumps({"model": model, **probe(
+                    ("Groq", assistant_model.ENDPOINT, groq_completion)
                 )}))
     else:
         print(json.dumps(run_checks(), indent=2))

@@ -13,7 +13,7 @@ from app import (
     assistant_model,
     waha,
 )
-from app.officer_auth import authorized, password_hash, signature
+from app.officer_auth import authorized, password_hash, signature, trusted_write
 from app.science.crops import local_today
 from app.science.irrigation import IrrigationSettings
 
@@ -31,6 +31,23 @@ class AssistantTest(TestCase):
             self.assertFalse(authorized(f"{old}.{signature(old, verifier, secret)}"))
             self.assertFalse(authorized(f"102.{active.split('.')[1]}.{proof}"))
             self.assertFalse(authorized(None))
+
+    def test_trusted_write_accepts_same_host_and_configured_origins(self):
+        def request(origin, host="api.onrender.com", scheme="https"):
+            return Mock(method="POST", headers={"Origin": origin},
+                        url=Mock(netloc=host, scheme=scheme))
+
+        with patch.dict("os.environ", {"AQUAPROOF_SECURE_COOKIES": "1",
+                                       "CORS_ORIGINS": "https://app.vercel.app"}):
+            # The backend's own origin is always trusted.
+            self.assertTrue(trusted_write(request("https://api.onrender.com")))
+            # The configured front-end origin (Vercel proxying /api) is trusted.
+            self.assertTrue(trusted_write(request("https://app.vercel.app")))
+            # An unlisted cross-origin write is rejected.
+            self.assertFalse(trusted_write(request("https://evil.example")))
+        with patch.dict("os.environ", {"AQUAPROOF_SECURE_COOKIES": "1", "CORS_ORIGINS": ""}):
+            # With no allowlist, only same-host writes pass (original behaviour).
+            self.assertFalse(trusted_write(request("https://app.vercel.app")))
 
     def test_unauthorized_tool_arguments_never_query_the_database(self):
         ctx = assistant_model.ToolContext("owner", {"F1": {"id": "own-field"}}, "inbound")
@@ -89,24 +106,24 @@ class AssistantTest(TestCase):
                 "rainfall_mm": None, "soil": None,
             })
 
-    def test_openrouter_retries_and_restricts_all_provider_choices(self):
+    def test_groq_completion_retries_and_sends_no_provider_block(self):
         success = httpx.Response(200, json={
             "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
             "usage": {"prompt_tokens": 15, "completion_tokens": 2, "cost": 0.1},
         })
         with (
-            patch.object(assistant_model, "config", return_value=("key", "model", ["approved-a", "approved-b"])),
+            patch.object(assistant_model, "config", return_value=("key", "openai/gpt-oss-120b")),
             patch.object(assistant_model, "reserve_call") as budget,
             patch.object(assistant_model.httpx, "post", side_effect=[httpx.Response(429), success]) as send,
             patch.object(assistant_model.time, "sleep"),
         ):
             usage = []
             assistant_model.request_model("farmer", [], usage)
-        route = send.call_args.kwargs["json"]["provider"]
-        self.assertEqual(route["only"], ["approved-a", "approved-b"])
-        self.assertTrue(route["zdr"])
-        self.assertTrue(route["require_parameters"])
-        self.assertEqual(route["data_collection"], "deny")
+        body = send.call_args.kwargs["json"]
+        # Groq's OpenAI-compatible endpoint rejects OpenRouter's provider routing object.
+        self.assertNotIn("provider", body)
+        self.assertEqual(body["model"], "openai/gpt-oss-120b")
+        self.assertEqual(send.call_args.args[0], assistant_model.ENDPOINT)
         self.assertEqual(budget.call_count, 2)
         self.assertEqual(usage[0]["cost"], 0.1)
 
@@ -120,20 +137,62 @@ class AssistantTest(TestCase):
         self.assertIn("کھیت", assistant_copy.template(result.language, "clarify"))
         self.assertIn("khet", assistant_copy.template("roman_ur", "clarify").casefold())
 
-    def test_fallback_uses_known_field_for_soil_and_greetings(self):
+    def test_identity_and_greeting_answers_come_from_the_model(self):
         aliases = {"F1": {"id": "parcel", "name": "North field"}}
-        ctx = assistant_model.ToolContext("owner", aliases, "inbound")
-        with patch.object(assistant_model, "config", return_value=None):
-            decision = assistant_model.decide(ctx, "Can you describe the soil?", [], "F1", "en", [])
-            self.assertEqual((decision.intent, decision.farm), ("profile", "F1"))
+        facts = {"assistant": assistant_jobs.ASSISTANT_IDENTITY, "field_name": "North field"}
+        # A question on a known field (even one the model tags 'clarify') routes through the field's
+        # full live context so the model can answer any follow-up; the reply is always composed.
+        with (
+            patch.object(assistant_jobs.model, "decide", return_value=assistant_model.Decision(
+                language="en", intent="clarify", farm="F1", tip="none")),
+            patch.object(assistant_jobs, "full_context", return_value=(facts, {})) as context,
+            patch.object(assistant_jobs.model, "compose_answer",
+                         return_value="I am the AquaProof AI assistant.") as compose,
+        ):
             reply = assistant_jobs.compute(
                 {"farmer_id": "owner", "kind": "inbound"},
-                ({"language": "en"}, aliases, "F1", "Hi", []),
+                ({"language": "en"}, aliases, "F1", "Who are you?", []),
             )
         self.assertEqual(reply[0], "parcel")
-        self.assertIn("North field", reply[2])
-        self.assertIn("What would you like to check", reply[2])
-        self.assertNotIn("which of your fields", reply[2])
+        self.assertEqual(reply[2], "I am the AquaProof AI assistant.")
+        context.assert_called_once()
+        sent = compose.call_args.args[1]
+        self.assertIn("AquaProof", sent["assistant"])
+        self.assertEqual(sent["known_fields"], ["North field"])
+
+    def test_known_field_question_answers_with_data_not_ask_officer(self):
+        aliases = {"F1": {"id": "parcel", "name": "North field"}}
+        facts = {"assistant": assistant_jobs.ASSISTANT_IDENTITY, "field_name": "North field",
+                 "land": {"area_acres": 2.5}}
+        # A vague "farm stats" question must never fall back to the officer: a linked field always
+        # answers from its full context.
+        with (
+            patch.object(assistant_jobs.model, "decide", return_value=assistant_model.Decision(
+                language="en", intent="clarify", farm="F1", tip="none")),
+            patch.object(assistant_jobs, "full_context", return_value=(facts, {})) as context,
+            patch.object(assistant_jobs.model, "compose_answer",
+                         side_effect=lambda fid, f, lang, q, usage: f"Area {f['land']['area_acres']} acres"),
+        ):
+            reply = assistant_jobs.compute(
+                {"farmer_id": "owner", "kind": "inbound"},
+                ({"language": "en"}, aliases, "F1", "tell me my farm stats", []),
+            )
+        context.assert_called_once()
+        self.assertEqual(reply[2], "Area 2.5 acres")
+
+    def test_unavailable_model_retries_instead_of_a_stored_reply(self):
+        aliases = {"F1": {"id": "parcel", "name": "North field"}}
+        facts = {"assistant": assistant_jobs.ASSISTANT_IDENTITY, "field_name": "North field"}
+        # With no model there is no canned fallback: the worker raises so the job retries.
+        with (
+            patch.object(assistant_model, "config", return_value=None),
+            patch.object(assistant_jobs, "full_context", return_value=(facts, {})),
+        ):
+            with self.assertRaises(assistant_model.ModelUnavailable):
+                assistant_jobs.compute(
+                    {"farmer_id": "owner", "kind": "inbound"},
+                    ({"language": "en"}, aliases, "F1", "Who are you?", []),
+                )
 
     def test_waha_direct_and_linked_quoted_message(self):
         adapter = waha.WAHA("https://waha.example", "default", "qa-only", "secret")

@@ -1,0 +1,55 @@
+# Render Blueprint for the AquaProof backend API.
+# Database lives on Supabase; the frontend lives on Vercel and proxies /api here.
+# In the Render dashboard: New + > Blueprint, pick this repo and the deploy branch,
+# then fill the secret values (marked sync:false) when prompted.
+services:
+  - type: web
+    name: aquaproof-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- Database (Supabase connection string, Session pooler, append ?sslmode=require) ---
+      - key: DATABASE_URL
+        sync: false
+      # --- Officer sign-in (generate with `python -m app.officer_auth`) ---
+      - key: AQUAPROOF_OFFICER_PASSWORD_HASH
+        sync: false
+      - key: AQUAPROOF_SESSION_SECRET
+        generateValue: true
+      - key: AQUAPROOF_SECURE_COOKIES
+        value: "1"
+      # --- Allowed browser origin(s): your Vercel site, comma-separated, no trailing slash ---
+      - key: CORS_ORIGINS
+        sync: false
+      # --- Assistant model (Groq, OpenAI-compatible) ---
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      # --- Weather and maps ---
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: ARCGIS_API_KEY
+        sync: false
+      - key: ARCGIS_SERVER_BASEMAPS
+        value: "1"
+      # --- Background work: keep WhatsApp off until a WAHA session is paired and approved ---
+      - key: ASSISTANT_ENABLED
+        value: "0"
+      - key: AQUAPROOF_BACKGROUND_WHATSAPP
+        value: "0"
+      - key: AQUAPROOF_HEALTH_ENABLED
+        value: "1"
+      # --- Optional WhatsApp (WAHA) transport; set when a session is provisioned ---
+      - key: WAHA_BASE_URL
+        sync: false
+      - key: WAHA_SESSION
+        value: default
+      - key: WAHA_API_KEY
+        sync: false
+      - key: WAHA_WEBHOOK_SECRET
+        sync: false

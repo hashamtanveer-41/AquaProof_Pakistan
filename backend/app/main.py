@@ -3,7 +3,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request
@@ -22,7 +22,7 @@ from .registry import router as registry_router
 from .science.routes import locations
 from .science.routes import router as science_router
 from .service_health import router as service_router
-from .service_health import run_checks
+from .service_health import refresh_whatsapp, run_checks
 
 
 class PrivateApiAccess(logging.Filter):
@@ -43,6 +43,10 @@ async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler(timezone="Asia/Karachi")
     if os.getenv("AQUAPROOF_HEALTH_ENABLED", "1") == "1":
         scheduler.add_job(run_checks, "interval", minutes=30, next_run_time=datetime.now().astimezone(), max_instances=1)
+        if waha.settings():
+            # Keep the WAHA session status fresh and self-healing between full health sweeps.
+            scheduler.add_job(refresh_whatsapp, "interval", seconds=180,
+                              next_run_time=datetime.now().astimezone() + timedelta(seconds=20), max_instances=1)
     if worker_enabled() and waha.settings():
         scheduler.add_job(schedule, "interval", seconds=60, max_instances=1)
         for index in range(3):

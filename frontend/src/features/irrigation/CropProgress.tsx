@@ -131,8 +131,7 @@ function StageBar({ stages, label }: { stages: Stage[]; label: string }) {
 
 const MISSING_TEXT: Record<string, string> = {
   crop: "Record the crop and planting date in Crop Monitoring.",
-  measurements: "Save the field inputs with a soil-water measurement time above.",
-  supply: "Enter the registered canal turn or tubewell pump flow (m³/hour) above.",
+  supply: "Enter the canal turn or tubewell pump flow under Water supply above.",
 };
 
 type Harvest =
@@ -202,7 +201,7 @@ export function CropProgress({ path }: { path: string }) {
     <>
       <Card
         title="Crop progress and water need"
-        subtitle="Deterministic FAO-56 crop-stage timeline and today's modeled irrigation."
+        subtitle="Crop-stage timeline and today's modeled water need."
       >
         {p?.status === "modeled" ? (
           <>

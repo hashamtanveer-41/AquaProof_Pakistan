@@ -55,6 +55,14 @@ def secure_cookie(request):
     return os.getenv("AQUAPROOF_SECURE_COOKIES", "0") == "1" or request.url.scheme == "https"
 
 
+def trusted_origins():
+    # Front ends served from a different host (e.g. Vercel proxying /api to a Render backend)
+    # present their own Origin. Trust the explicitly configured site origins in addition to the
+    # backend's own host. Empty by default, so a single-origin deployment keeps same-host-only writes.
+    raw = os.getenv("CORS_ORIGINS", "")
+    return {origin.strip().rstrip("/").lower() for origin in raw.split(",") if origin.strip()}
+
+
 def trusted_write(request):
     if request.method in SAFE_METHODS:
         return True
@@ -64,7 +72,9 @@ def trusted_write(request):
     try:
         target = urlsplit(origin)
         scheme = "https" if secure_cookie(request) else request.url.scheme
-        return target.scheme == scheme and target.netloc.lower() == request.url.netloc.lower()
+        if target.scheme == scheme and target.netloc.lower() == request.url.netloc.lower():
+            return True
+        return origin.rstrip("/").lower() in trusted_origins()
     except ValueError:
         return False
 

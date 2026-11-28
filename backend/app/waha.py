@@ -23,7 +23,17 @@ class RetryBeforeSend(ProviderError):
     pass
 
 
+def serialized_id(value):
+    """WAHA message IDs arrive either as the serialized string or, on the WEBJS engine,
+    as an object like {"_serialized": "true_<chat>_<id>", "id": "<id>", ...}. Normalize to
+    the serialized string before matching."""
+    if isinstance(value, dict):
+        value = value.get("_serialized") or value.get("id")
+    return value if isinstance(value, str) else None
+
+
 def message_key(value):
+    value = serialized_id(value)
     if not isinstance(value, str) or not 1 <= len(value) <= 240:
         return None
     # Engines can serialize a quote with a different chat alias or direction prefix.

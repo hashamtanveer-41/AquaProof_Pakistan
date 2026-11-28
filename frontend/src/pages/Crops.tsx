@@ -23,6 +23,18 @@ export default function Crops({
   const [library, setLibrary] = useState<string[]>([]);
   const regionFields = fields.filter((field) => !region || field.region === region);
   const hasFields = regionFields.length > 0;
+  // Start-a-season form: the crop is pre-filled from the field's registered crop so it
+  // is not retyped. Selecting a different field refreshes the suggestion.
+  const [seasonField, setSeasonField] = useState("");
+  const [seasonCrop, setSeasonCrop] = useState("");
+  const selectedField = regionFields.find((field) => field.id === seasonField);
+  useEffect(() => {
+    if (!seasonField && regionFields.length) setSeasonField(regionFields[0].id);
+  }, [regionFields, seasonField]);
+  useEffect(() => {
+    const registered = selectedField?.crop;
+    if (registered && registered !== "Not recorded") setSeasonCrop(registered);
+  }, [seasonField, selectedField?.crop]);
   useEffect(() => {
     if (!hasFields) return;
     const controller = new AbortController();
@@ -57,14 +69,13 @@ export default function Crops({
               try {
                 onSeasonSaved(
                   await startSeason(
-                    String(values.get("field")),
-                    String(values.get("crop")),
+                    seasonField,
+                    seasonCrop.trim(),
                     String(values.get("variety")).trim(),
                     String(values.get("planted")),
                   ),
                 );
                 form.reset();
-                setCrop("");
                 setStatus("Crop season saved.");
               } catch (error) {
                 setStatus(
@@ -77,7 +88,12 @@ export default function Crops({
           >
             <label>
               Field
-              <select name="field" required>
+              <select
+                name="field"
+                required
+                value={seasonField}
+                onChange={(event) => setSeasonField(event.target.value)}
+              >
                 {regionFields.map((field) => (
                   <option key={field.id} value={field.id}>
                     {field.name}
@@ -87,15 +103,24 @@ export default function Crops({
             </label>
             <label>
               Crop
-              <input name="crop" list="available-crops" required maxLength={160} />
+              <input
+                name="crop"
+                list="available-crops"
+                required
+                maxLength={160}
+                value={seasonCrop}
+                onChange={(event) => setSeasonCrop(event.target.value)}
+              />
               <datalist id="available-crops">
                 {library.map((name) => (
                   <option key={name} value={name} />
                 ))}
               </datalist>
-              {library.length > 0 && (
-                <small>{library.length} modeled crop calendars available</small>
-              )}
+              <small>
+                {selectedField?.crop && selectedField.crop !== "Not recorded"
+                  ? `Pre-filled from the field's registered crop · ${library.length} modeled calendars`
+                  : `${library.length} modeled crop calendars available`}
+              </small>
             </label>
             <label>
               Variety

@@ -18,13 +18,16 @@ from .crops import (
     regional_reference,
 )
 from .irrigation import (
+    CanalTurn,
     IrrigationSettings,
     NonNegative,
     Scenario,
+    Tubewell,
     apply_decisions,
     canal_capacity,
     optimize,
     salinity_screen,
+    soil_water_defaults,
 )
 from .progress import (
     harvest_window,
@@ -124,22 +127,22 @@ def water_plan(field_id: str):
         settings = read_settings(connection, field_id)
         point = location(connection, field_id)
     resolved, status = modeled_season(field)
-    # Ask for what is missing instead of guessing any water figure.
+    # Soil-water parameters are derived from crop and soil; only the crop calendar and a
+    # physical water source still have to be recorded.
     missing = []
     if status:
         missing.append("crop")
-    if not settings or not field.get("irrigation_measured_at"):
-        missing.append("measurements")
     source = field["source"].casefold()
-    if settings and (("canal" in source and not settings.canal)
-                     or ("tubewell" in source and not settings.tubewell)):
+    needs_supply = "canal" in source or "tubewell" in source
+    if needs_supply and not (settings and (settings.canal or settings.tubewell)):
         missing.append("supply")
     if missing:
         return {"status": "input_required", "field_id": field_id, "missing": missing,
-                "guidance": "Record the crop and planting date, officer soil-water measurements, "
-                            "and the registered canal turn or tubewell flow before AquaProof estimates water."}
+                "guidance": "Record the crop and planting date in Crop Monitoring and the registered "
+                            "canal turn or tubewell flow before AquaProof estimates water."}
 
     season, crop = resolved
+    settings = derived_settings(field, settings)
     planted = date.fromisoformat(season["planted"])
     area_m2 = field["acres"] * AREA_M2_PER_ACRE
     forecast_data = weather.irrigation_forecast(weather.point_query(*weather_coordinates(point)))
@@ -263,25 +266,71 @@ def read_settings(connection, field_id):
     return IrrigationSettings.model_validate(row["settings"]) if row else None
 
 
+def field_crop(field):
+    """Calendar crop name for the field's current season, or None when unmodeled."""
+    season = next(iter(field["seasons"]), None)
+    return CROP_NAMES.get(season["crop"].casefold()) if season else None
+
+
+def derived_settings(field, saved=None):
+    """Full IrrigationSettings for the engine: the officer's saved record when present,
+    otherwise FAO-56 soil-water defaults derived from the registered crop and soil."""
+    if saved:
+        return saved
+    return IrrigationSettings(**soil_water_defaults(field_crop(field), field.get("soil")))
+
+
+# Officers enter only the physical water supply; the FAO-56 soil-water parameters are
+# derived from crop and soil. Advanced overrides stay optional for calibration.
+class FieldWaterInput(Input):
+    canal: CanalTurn | None = None
+    tubewell: Tubewell | None = None
+    soil_ece_ds_m: float | None = Field(default=None, ge=0, le=100)
+    taw_mm: float | None = Field(default=None, gt=0, le=1200)
+    initial_depletion_mm: NonNegative | None = None
+    allowable_depletion: float | None = Field(default=None, gt=0, lt=1)
+    efficiency: float | None = Field(default=None, gt=0, le=1)
+    surface_taw_mm: float | None = Field(default=None, gt=0, le=80)
+    surface_raw_mm: NonNegative | None = None
+    initial_surface_depletion_mm: NonNegative | None = None
+
+
+SOIL_WATER_KEYS = ("taw_mm", "initial_depletion_mm", "allowable_depletion", "efficiency",
+                   "surface_taw_mm", "surface_raw_mm", "initial_surface_depletion_mm")
+
+
+def compose_settings(field, payload: FieldWaterInput) -> IrrigationSettings:
+    """Merge derived FAO-56 soil-water defaults with any officer overrides and supply."""
+    base = soil_water_defaults(field_crop(field), field.get("soil"))
+    overrides = {key: getattr(payload, key) for key in SOIL_WATER_KEYS
+                 if getattr(payload, key) is not None}
+    return IrrigationSettings(**{**base, **overrides}, soil_ece_ds_m=payload.soil_ece_ds_m,
+                              canal=payload.canal, tubewell=payload.tubewell)
+
+
 @router.get("/{field_id}/irrigation-settings")
 def get_settings(field_id: str):
     with connect() as connection:
-        location(connection, field_id)
+        field = field_by_id(connection, field_id)
         row = connection.execute(
             "SELECT settings,measured_at FROM irrigation_settings WHERE field_id=%s", (field_id,),
         ).fetchone()
-        return {**row["settings"], "measured_at": row["measured_at"]} if row else None
+    if row:
+        return {**row["settings"], "measured_at": row["measured_at"], "derived": False}
+    # No saved record yet: show the FAO-56 soil-water defaults the engine will use.
+    return {**derived_settings(field).model_dump(mode="json"), "measured_at": None, "derived": True}
 
 
 @router.put("/{field_id}/irrigation-settings")
-def save_settings(field_id: str, settings: IrrigationSettings, measured_at: datetime | None = None):
+def save_settings(field_id: str, payload: FieldWaterInput, measured_at: datetime | None = None):
     if measured_at and (measured_at.tzinfo is None or measured_at > datetime.now(UTC) + timedelta(minutes=5)):
         raise HTTPException(422, "Record the soil-water measurement time with a timezone and within the past.")
     with connect() as connection:
         field = field_by_id(connection, field_id)
         source = field["source"].casefold()
-        if (settings.canal and "canal" not in source) or (settings.tubewell and "tubewell" not in source):
+        if (payload.canal and "canal" not in source) or (payload.tubewell and "tubewell" not in source):
             raise HTTPException(422, "Configure only the water sources registered for this field")
+        settings = compose_settings(field, payload)
         saved = connection.execute(
             """INSERT INTO irrigation_settings (field_id,settings,measured_at) VALUES (%s, %s, %s)
                ON CONFLICT (field_id) DO UPDATE SET settings=excluded.settings,
@@ -294,7 +343,7 @@ def save_settings(field_id: str, settings: IrrigationSettings, measured_at: date
             (field_id, Jsonb(settings.model_dump(mode="json")), measured_at),
         ).fetchone()
         queue_field_recheck(connection, field_id)
-    return {**settings.model_dump(mode="json"), "measured_at": saved["measured_at"]}
+    return {**settings.model_dump(mode="json"), "measured_at": saved["measured_at"], "derived": False}
 
 
 @router.post("/{field_id}/simulate")
@@ -311,14 +360,14 @@ def simulate(field_id: str, scenario: Scenario):
 def simulation_inputs(connection, field_id):
     field = field_by_id(connection, field_id)
     settings = read_settings(connection, field_id)
-    if not settings:
-        raise HTTPException(409, "Save the field's irrigation settings before running a scenario")
     if not field["seasons"] or not field["seasons"][0]["planted"]:
         raise HTTPException(409, "Record the crop and planting date in Crop Monitoring")
     season = field["seasons"][0]
     crop = CROP_NAMES.get(season["crop"].casefold())
     if not crop:
         raise HTTPException(422, "No crop calendar is available for this crop")
+    # Soil-water parameters fall back to FAO-56 defaults derived from crop and soil.
+    settings = derived_settings(field, settings)
     point = {key: field[key] for key in ("latitude", "longitude")}
     return field, settings, season, crop, point
 
@@ -333,8 +382,8 @@ def simulate_inputs(field, settings, season, crop, point, forecast_data, scenari
         raise HTTPException(502, "The forecast did not include usable rainfall and reference ET")
     warnings = []
     measured_at = field.get("irrigation_measured_at")
-    if not measured_at or datetime.now(UTC) - measured_at > timedelta(hours=36):
-        warnings.append("Current soil-water measurements are missing or older than 36 hours. Review the assumptions before applying the plan.")
+    if measured_at and datetime.now(UTC) - measured_at > timedelta(hours=36):
+        warnings.append("Soil-water measurements are older than 36 hours. Review the assumptions before applying the plan.")
     if crop == "Rice":
         warnings.append("Rice water balance excludes ponding, land preparation, seepage and paddy losses. Officer review is required.")
     if any(row.get("max_c") is not None and row["max_c"] >= 40 for row in daily):
@@ -350,7 +399,8 @@ def simulate_inputs(field, settings, season, crop, point, forecast_data, scenari
         "weather_source": forecast_data["source"],
         "weather_retrieved_at": forecast_data["retrieved_at"],
         "weather_fallback_reason": forecast_data.get("fallback_reason"),
-        "soil_inputs_source": "Officer-entered root-zone and surface water settings",
+        "soil_inputs_source": ("Officer-entered root-zone and surface water settings" if measured_at
+                               else "Modeled FAO-56 soil-water defaults from crop and soil"),
         "soil_measured_at": measured_at,
         "warnings": warnings,
         "salinity": salinity,

@@ -1,4 +1,4 @@
-"""Run synthetic WhatsApp conversations through the real OpenRouter model and PostGIS."""
+"""Run synthetic WhatsApp conversations through the real Groq model and PostGIS."""
 
 import os
 from datetime import UTC, datetime, timedelta

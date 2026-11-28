@@ -13,9 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from . import assistant_farms as farms
 from .database import connect
 from .science.crops import CROP_NAMES, CROPS, local_today
-from .science.progress import harvest_window
+from .science.progress import harvest_window, season_progress
 
-ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+ENDPOINT = os.getenv("GROQ_BASE_URL", "").strip() or "https://api.groq.com/openai/v1/chat/completions"
 LANGUAGE = Literal["en", "ur", "roman_ur"]
 DEFAULT_LANGUAGE: LANGUAGE = "ur"
 ALIAS = re.compile(r"F[1-9][0-9]{0,3}", re.ASCII)
@@ -32,6 +32,9 @@ SYSTEM = (
     "Use the preferred language. General crop-care and field technique questions use crop. "
     "Questions about a field's recorded crop, soil type or water source can use profile. "
     "Questions about harvesting, cutting the crop, drying grain, or whether the crop is ripe use harvest. "
+    "Broad questions asking for the field's overall status, stats, numbers, a summary, or 'everything "
+    "about my farm' use recommendation; the backend supplies the full field context. "
+    "Greetings, small talk, thanks, and questions about who you are or what you can do use clarify. "
     "For daily and correction jobs use the supplied job kind and farm."
 )
 
@@ -73,12 +76,9 @@ def json_dump(value):
 
 
 def config():
-    key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = os.getenv("OPENROUTER_MODEL", "").strip() or "openai/gpt-4o"
-    providers = list(dict.fromkeys(
-        name.strip() for name in os.getenv("OPENROUTER_APPROVED_PROVIDERS", "").split(",") if name.strip()
-    ))
-    return (key, model, providers) if key and model and providers else None
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    model = os.getenv("GROQ_MODEL", "").strip() or "openai/gpt-oss-120b"
+    return (key, model) if key and model else None
 
 
 def reserve_call(farmer_id):
@@ -103,8 +103,8 @@ class ModelUnavailable(RuntimeError):
 def request_model(farmer_id, messages, usage, **shape):
     settings = config()
     if not settings:
-        raise ModelUnavailable("OpenRouter or its provider allowlist is unconfigured")
-    key, model, providers = settings
+        raise ModelUnavailable("Groq model access is unconfigured")
+    key, model = settings
     for attempt in range(2):
         if farmer_id is not None:
             reserve_call(farmer_id)
@@ -114,8 +114,6 @@ def request_model(farmer_id, messages, usage, **shape):
                 timeout=httpx.Timeout(14, connect=4),
                 json={
                     "model": model, "messages": messages, "max_tokens": 450, "temperature": 0,
-                    "provider": {"only": providers, "order": providers, "allow_fallbacks": True,
-                                 "require_parameters": True, "data_collection": "deny", "zdr": True},
                     **shape,
                 },
             )
@@ -123,7 +121,7 @@ def request_model(farmer_id, messages, usage, **shape):
             if attempt == 0:
                 time.sleep(.5)
                 continue
-            raise ModelUnavailable("OpenRouter transport unavailable", 503) from None
+            raise ModelUnavailable("Groq transport unavailable", 503) from None
         if response.status_code in (408, 429, 500, 502, 503, 504) and attempt == 0:
             time.sleep(.5)
             continue
@@ -134,7 +132,7 @@ def request_model(farmer_id, messages, usage, **shape):
                 429: "rate limit reached",
             }
             reason = reasons.get(response.status_code, "completion request failed")
-            raise ModelUnavailable(f"OpenRouter chat completions returned HTTP {response.status_code} ({reason})",
+            raise ModelUnavailable(f"Groq chat completions returned HTTP {response.status_code} ({reason})",
                                    response.status_code)
         try:
             data = response.json()
@@ -153,8 +151,8 @@ def request_model(farmer_id, messages, usage, **shape):
                 raise ValueError()
             return message
         except (ValueError, TypeError, KeyError, IndexError, AttributeError):
-            raise ModelUnavailable("OpenRouter returned an invalid response") from None
-    raise ModelUnavailable("OpenRouter unavailable")
+            raise ModelUnavailable("Groq returned an invalid response") from None
+    raise ModelUnavailable("Groq unavailable")
 
 
 TOOL_NAMES = (
@@ -218,6 +216,14 @@ class ToolContext:
             return {"missing": ["weather"]}
         return harvest_window(crop, farm["planted"], CROPS[crop]["lengths"], local_today(),
                               forecast["daily"])
+
+    def stage_timeline(self, farm):
+        # Deterministic FAO-56 four-stage calendar: current stage, day-in-stage, percent progress
+        # and modeled maturity from the planting date alone (no weather needed).
+        crop = CROP_NAMES.get((farm["crop"] or "").casefold())
+        if not crop or not farm["planted"]:
+            return {"missing": ["crop"]}
+        return season_progress(crop, farm["planted"], CROPS[crop]["lengths"], local_today())
 
     def execute(self, name, args):
         if name not in TOOL_NAMES or not isinstance(args, dict):
@@ -337,4 +343,43 @@ def decide(ctx, inbound, recent, default_alias, language, usage):
     except (ValidationError, ValueError, TypeError, KeyError, AttributeError, HTTPException):
         ctx.proposal = None
         return Decision(language=language, intent="clarify" if ctx.kind == "inbound" else "recommendation",
-                        farm=default_alias, tip="none" if ctx.kind == "inbound" else "check_soil")
+                        farm=default_alias, tip="none")
+
+
+COMPOSE_SYSTEM = (
+    "You are the AquaProof AI assistant, replying to a Pakistani farmer on WhatsApp about their own field. "
+    "If the farmer asks who or what you are, say you are the AquaProof AI assistant that helps with their "
+    "farm's irrigation, crop stage, weather, and harvest decisions. "
+    "Write a clear, practical reply in the farmer's preferred language. "
+    "Explain the irrigation or crop guidance AND the reasons behind it, using the FACTS provided. "
+    "When the farmer asks for specific numbers, give the exact figures from FACTS with their units, "
+    "and explain what drives them. Ground every number in FACTS; never invent, guess, or state a value "
+    "that is not present. If a needed figure is missing from FACTS, say it is unavailable and, when known, "
+    "what the officer should record. "
+    "Weather and soil-water figures are modeled estimates, not certainties, so word them honestly. "
+    "Do not add greetings, names, phone numbers, email addresses, or sign-offs. Keep it under about 110 words "
+    "unless the farmer explicitly asks for a full numeric breakdown."
+)
+
+
+def compose_answer(farmer_id, facts, language, question, usage):
+    """Generate an explanatory farmer reply grounded strictly in the deterministic FACTS.
+
+    The science engine computes every number; the model only phrases the explanation and the
+    reasoning. Returns None when the model is unavailable so the caller falls back to a
+    deterministic message rather than inventing text."""
+    try:
+        response = request_model(farmer_id, [
+            {"role": "system", "content": COMPOSE_SYSTEM},
+            {"role": "user", "content": json_dump({
+                "preferred_language": language,
+                "farmer_question": clean(question) if question else None,
+                "facts": facts,
+            })},
+        ], usage)
+    except ModelUnavailable:
+        return None
+    text = response.get("content")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return clean(text)

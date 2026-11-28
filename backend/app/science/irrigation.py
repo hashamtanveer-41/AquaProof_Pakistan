@@ -67,6 +67,51 @@ class Scenario(Input):
     pump_hours_cap: float | None = Field(default=None, ge=0, le=24, allow_inf_nan=False)
 
 
+# FAO-56 Table 22 maximum rooting depth Zr (m) and soil-water depletion fraction p for
+# the crops AquaProof models in Pakistan. A generic fallback covers unlisted crops.
+CROP_ROOT_DEPLETION = {
+    "Wheat": (1.5, 0.55), "Maize": (1.0, 0.55), "Rice": (0.5, 0.20),
+    "Cotton": (1.2, 0.65), "Sugarcane": (1.5, 0.65), "Soybean": (0.9, 0.50),
+    "Sorghum": (1.3, 0.55), "Sunflower": (1.0, 0.45), "Barley": (1.2, 0.55),
+    "Potato": (0.5, 0.35), "Onion": (0.4, 0.30), "Tomato": (0.9, 0.40),
+}
+DEFAULT_ROOT_DEPLETION = (1.0, 0.50)
+
+# FAO-56 Table 19 representative total available water (mm per metre of root depth) and
+# evaporable surface water (TEW, REW in mm) for the soil textures offered at registration.
+SOIL_WATER = {
+    "sandy loam": (120.0, 22.0, 8.0),
+    "loam": (160.0, 26.0, 9.0),
+    "silt loam": (185.0, 30.0, 10.0),
+    "clay loam": (170.0, 28.0, 10.0),
+}
+DEFAULT_SOIL_WATER = (150.0, 24.0, 9.0)
+
+
+def soil_water_defaults(crop, soil):
+    """Derive the FAO-56 soil-water parameters from the registered crop and soil type.
+
+    Officers already record crop and soil, so these generic defaults replace the
+    hand-entered root-zone and surface-evaporation figures. They stay modeled estimates
+    that a provincial agronomist should calibrate; an officer may override any of them.
+    """
+    zr, p = CROP_ROOT_DEPLETION.get(crop, DEFAULT_ROOT_DEPLETION)
+    awc, tew, rew = SOIL_WATER.get((soil or "").strip().casefold(), DEFAULT_SOIL_WATER)
+    taw = round(awc * zr, 1)
+    return {
+        "taw_mm": taw,
+        # With no measured reading, assume the root zone sits at the readily-available-water
+        # trigger (FAO-56 allowable depletion), i.e. the crop is due for irrigation. This yields
+        # the net irrigation requirement rather than assuming a conveniently full profile.
+        "initial_depletion_mm": round(taw * p, 1),
+        "allowable_depletion": p,
+        "efficiency": 0.65,
+        "surface_taw_mm": tew,
+        "surface_raw_mm": rew,
+        "initial_surface_depletion_mm": round(rew, 1),
+    }
+
+
 def salinity_screen(crop, settings):
     # FAO Irrigation and Drainage Paper 61, Annex 1. This is an indicative
     # root-zone saturated paste threshold, not irrigation-water conductivity.

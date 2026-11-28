@@ -242,8 +242,12 @@ class PostgisTests(TestCase):
             forecast = {"source": "Mock OpenWeather", "retrieved_at": now, "daily": [
                 {"rain_mm": 1.5, "precip_probability_pct": 60},
             ]}
+            # Every farmer answer is composed by the model from the field facts (config=None only
+            # drives the heuristic intent classifier; the composed reply is mocked deterministically).
+            echo = lambda fid, facts, lang, q, usage: f"{facts.get('field_name', '')}: composed answer"
             with (
                 patch("app.assistant_model.config", return_value=None),
+                patch("app.assistant_model.compose_answer", side_effect=echo) as compose,
                 patch("app.assistant_farms.current_weather", return_value={"time": now, "retrieved_at": now}) as current,
                 patch("app.assistant_farms.field_weather_forecast", return_value=forecast) as weather,
                 patch("app.assistant_farms.fresh_forecast", return_value=forecast) as irrigation,
@@ -255,28 +259,30 @@ class PostgisTests(TestCase):
                     fetch.assert_called_once()
                 self.assertEqual(weather.call_args.args[0]["id"], field["id"])
                 self.assertTrue(soil.call_args.kwargs["refresh"])
+                self.assertTrue(compose.called)
             deliver()
             recipient, answer = sender.call_args.args
             self.assertEqual(recipient, phone)
             self.assertIn(field["name"], answer)
             self.assertNotIn(other["field"]["name"], answer)
-            self.assertIn("بارش متوقع ہے", answer)
-            self.assertNotIn("60%", answer)
             self.assertNotIn("AQ-REPLY", answer)
             self.assertEqual(webhook(phone, "follow-up", "مٹی کی قسم کیا ہے؟", reply_to="qa-answer").status_code, 204)
             with (
                 patch("app.assistant_model.decide", return_value=Decision(
                     language="en", intent="profile", farm="F1", tip="none",
                 )),
+                patch("app.assistant_model.compose_answer",
+                      side_effect=lambda fid, facts, lang, q, usage: f"{facts['field_name']} soil reply") as compose,
                 patch("app.assistant_farms.live_conditions", return_value={}) as live,
             ):
                 process_one()
-                live.assert_not_called()
+                # The model now receives the field's full context, so weather is always gathered.
+                live.assert_called()
+                self.assertTrue(compose.called)
             deliver()
             recipient, answer = sender.call_args.args
             self.assertEqual(recipient, phone)
-            self.assertIn("مٹی کی قسم", answer)
-            self.assertIn("میرا مٹی", answer)
+            self.assertIn(field["name"], answer)
             self.assertEqual(TestClient(app).get(conversation_path).status_code, 401)
             page = self.client.get(conversation_path, params={"limit": 2}).json()
             self.assertEqual(len(page["messages"]), 2)

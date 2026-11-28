@@ -14,7 +14,7 @@ from . import assistant_farms as farms
 from . import assistant_model as model
 from .assistant_access import enabled, farmer_scope, verified
 from .database import connect
-from .science.crops import CROP_NAMES, lifecycle, local_today
+from .science.crops import CROP_NAMES, local_today
 
 TOKEN = re.compile(r"(?im)^\s*(?:>\s*)?AQ-REPLY[ \t]+([0-9a-f-]{36}\.[0-9a-f]{64})[ \t]*$")
 QUOTE = re.compile(r"(?m)^(?:>.*|On .* wrote:\s*)$")
@@ -313,6 +313,79 @@ def state_for(job):
     return identity, aliases, default, message, recent
 
 
+ASSISTANT_IDENTITY = ("the AquaProof AI assistant that helps this farmer with their field's irrigation, "
+                      "crop stage, weather, and harvest timing")
+
+# Plain-language meaning of each missing input, for the model to explain (it never sees raw keys).
+MISSING_MEANING = {
+    "crop": "the crop type and planting date have not been recorded for this field",
+    "supply": "the field's canal turn schedule or tubewell flow has not been configured",
+    "weather": "a reliable weather forecast is not available right now",
+    "season": "the crop is currently outside its modeled growing season",
+    "measurements": "recent soil-water measurements are not on record",
+}
+
+# General instruction for every data answer: answer the farmer's actual question from the facts,
+# which already carry the field's land, crop stage, live weather, solar/soil readings, irrigation
+# plan and harvest timing. The model should avoid "I don't know" when a figure is present.
+ANSWER_NOTE = (
+    "Answer the farmer's question directly and specifically from these facts. The field's area and "
+    "land details, crop and growth stage, the stage timeline, current temperature and humidity, the "
+    "rain forecast, solar and soil-moisture readings, the irrigation plan and harvest timing are all "
+    "provided here — give the exact figures with their units when the farmer asks for them. If the "
+    "farmer only greeted you or asked who you are, reply briefly as the AquaProof AI assistant and "
+    "invite a field question without listing numbers. Only say a specific value is unavailable when it "
+    "is genuinely absent from these facts.")
+MISSING_NOTE = (
+    "Some planning inputs are not yet recorded. Explain in plain language what the officer should add "
+    "and why, but still answer everything the facts DO cover (area, weather, crop stage, harvest). Do "
+    "not state any irrigation volume, runtime, or cost until those inputs are provided.")
+
+AREA_M2_PER_ACRE = 4046.8564224
+
+
+def full_context(ctx, alias, name, language):
+    """Assemble everything the model may need about one field so it can answer any question:
+    land and stored records, fresh API weather, solar and soil-moisture readings, the FAO-56
+    irrigation simulation and crop-stage timeline, the warabandi schedule, harvest timing and recent
+    history. The live weather, solar and soil readings are fetched on demand (fresh API calls).
+    Returns (model_facts, raw_evidence)."""
+    farm = ctx.owned(alias)
+    evidence = ctx.plan(farm)  # runs the live weather/solar fetch and the simulation (or reports what is missing)
+    forecast = evidence.get("weather_forecast") or evidence.get("forecast") or {}
+    ring = ((farm.get("boundary") or {}).get("coordinates") or [[]])[0]
+    facts = {
+        "assistant": ASSISTANT_IDENTITY, "field_name": name,
+        "stored_records": {
+            "crop": CROP_NAMES.get((farm["crop"] or "").casefold()) or (model.clean(farm["crop"]) if farm["crop"] else None),
+            "planting_date": str(farm["planted"]) if farm["planted"] else None,
+            "growth_stage": farm["stage"], "soil": model.clean(farm["soil"]),
+            "water_source": model.clean(farm["source"]),
+        },
+        "land": {
+            "area_acres": round(farm["area_m2"] / AREA_M2_PER_ACRE, 2),
+            "area_m2": round(farm["area_m2"], 1),
+            "boundary_vertices": max(len(ring) - 1, 0),
+        },
+        "current_weather": evidence.get("current"),
+        "forecast_days": forecast.get("daily", [])[:5],
+        "solar_and_soil": evidence.get("soil_and_solar"),
+        "crop_stage_timeline": ctx.stage_timeline(farm),
+        "harvest_timing": ctx.harvest(farm),
+        "recent_history": farms.history(ctx.farmer_id, farm["id"]),
+    }
+    # Precise geometry (representative point) only leaves the server when deployment policy allows it.
+    if os.getenv("ASSISTANT_SHARE_PRECISE_GEOMETRY") == "1":
+        facts["land"]["representative_point_lon_lat"] = [farm["longitude"], farm["latitude"]]
+    facts["note"] = ANSWER_NOTE
+    if evidence.get("missing"):
+        facts["missing_inputs"] = [MISSING_MEANING.get(key, key) for key in evidence["missing"]]
+        facts["note"] = f"{ANSWER_NOTE} {MISSING_NOTE}"
+    else:
+        facts["irrigation_simulation"] = copy.answer_facts(name, language, evidence)
+    return facts, evidence
+
+
 def compute(job, state):
     identity, aliases, default, message, recent = state
     ctx = model.ToolContext(job["farmer_id"], aliases, job["kind"])
@@ -344,69 +417,47 @@ def compute(job, state):
     evidence = {}
     observation = None
     reason = None
+    # Scheduled jobs have no farmer question; the model composes a proactive advisory from facts.
+    question = message if job["kind"] == "inbound" else None
+
+    def explain(facts):
+        """Every farmer answer is composed by the model from real field data. No stored text:
+        if the model is unavailable the job retries rather than sending a canned reply."""
+        reply = model.compose_answer(job["farmer_id"], facts, language, question, usage)
+        if reply is None:
+            raise model.ModelUnavailable("Model unavailable for farmer answer")
+        return reply
+
     if ctx.escalation or intent == "escalate":
+        # High-risk or unsupported: route to a human officer. Operational, not a data answer.
         reason = "Unsupported or high-risk request"
         body = copy.template(language, "review")
+    elif intent == "observation" and selected and ctx.proposal and ctx.proposal[0] == selected:
+        # Receipt confirmation for a reported measurement held for officer verification.
+        observation = ctx.proposal[1].model_dump(mode="json")
+        body = copy.template(language, "observation")
     elif not selected:
-        body = copy.template(language, "clarify" if aliases else "no_field")
-    elif intent == "clarify":
-        body = copy.field_message(aliases[selected]["name"], copy.template(language, "clarify_topic"))
+        # The field could not be identified for this question. This is the only non-data reply: ask
+        # which field (when several are linked) or, if none is linked yet, to have the officer add
+        # one. A greeting or identity question is still answered as the assistant.
+        body = explain({"assistant": ASSISTANT_IDENTITY,
+                        "known_fields": [aliases[alias]["name"] for alias in aliases],
+                        "no_field_linked": not aliases,
+                        "note": "The farmer's field could not be identified for this question. If "
+                                "known_fields lists more than one field, ask which one they mean. If "
+                                "no_field_linked is true, say no field is linked to their number yet and "
+                                "to ask their agriculture officer to add it. Answer greeting or identity "
+                                "questions as the AquaProof AI assistant."})
     else:
-        farm = ctx.owned(selected)
-        name = aliases[selected]["name"]
-        if intent != "profile":
-            evidence = ctx.live(farm)
-        if intent == "observation":
-            if ctx.proposal and ctx.proposal[0] == selected:
-                observation = ctx.proposal[1].model_dump(mode="json")
-                body = copy.template(language, "observation")
-            else:
-                body = copy.field_message(name, copy.template(language, "clarify_topic"))
-        elif intent == "history":
-            records = farms.history(job["farmer_id"], field_id)
-            evidence = {**evidence, **records}
-            body = copy.field_message(name, copy.history_report(language, records))
-        elif intent == "profile":
-            profile = {key: farm[key] for key in ("crop", "soil", "source")}
-            evidence = {**evidence, "profile": profile}
-            body = copy.field_message(name, copy.profile_report(language, profile))
-        elif intent == "weather":
-            forecast = evidence["weather_forecast"] or evidence["forecast"]
-            if forecast:
-                body = copy.field_message(name, copy.weather_report(language, forecast["daily"][0]))
-            else:
-                body = copy.report(language, name, {"missing": ["weather"]})
-        elif intent == "crop":
-            crop = CROP_NAMES.get((farm["crop"] or "").casefold())
-            if crop and farm["planted"]:
-                estimate = lifecycle(crop, farm["planted"], local_today())
-                evidence = {**evidence, "crop_lifecycle": model.json_dump(estimate)}
-                body = copy.field_message(
-                    name, copy.template(language, "crop").format(
-                        stage=copy.stage_name(language, estimate["current_stage"]),
-                    ),
-                )
-            else:
-                body = copy.report(language, name, {"missing": ["crop"]})
-        elif intent == "harvest":
-            info = ctx.harvest(farm)
-            evidence = {**evidence, "harvest": info}
-            body = copy.field_message(name, copy.harvest_report(language, info))
-        else:
-            evidence = ctx.plan(farm)
-            if intent == "outlook" and not evidence.get("missing"):
-                body = copy.field_message(name, copy.outlook(language, evidence))
-            else:
-                body = copy.report(language, name, evidence, decision.tip)
-            if evidence.get("requires_review"):
-                reason = "Forecast hazard, crop stress, salinity, or crop-model limitations"
-            # Proactive harvest alert on scheduled advisories when the crop is ripe and rain threatens.
-            if job["kind"] != "inbound":
-                harvest_info = ctx.harvest(farm)
-                alert = copy.harvest_alert(language, harvest_info)
-                if alert:
-                    body = f"{alert}\n{body}"
-                    evidence = {**evidence, "harvest": harvest_info.get("recommendation")}
+        # A field is identified. Hand the model the field's complete live context — land, crop stage
+        # and timeline, fresh weather, solar and soil readings, the FAO-56 simulation, warabandi
+        # schedule, harvest timing and history — so it can answer ANY question (area, stage, what to
+        # do now, temperature, humidity, harvest timing) and rarely needs to say something is missing.
+        facts, evidence = full_context(ctx, selected, aliases[selected]["name"], language)
+        facts["known_fields"] = [aliases[alias]["name"] for alias in aliases]
+        body = explain(facts)
+        if not evidence.get("missing") and evidence.get("requires_review"):
+            reason = "Forecast hazard, crop stress, salinity, or crop-model limitations"
     return field_id, language, body, evidence, usage, reason, observation
 
 

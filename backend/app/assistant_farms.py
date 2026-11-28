@@ -5,7 +5,13 @@ from fastapi import HTTPException
 from .assistant_access import farmer_scope
 from .science import weather
 from .science.crops import CROP_NAMES, crop_stage, local_today
-from .science.irrigation import IrrigationSettings, Scenario, optimize, salinity_screen
+from .science.irrigation import (
+    IrrigationSettings,
+    Scenario,
+    optimize,
+    salinity_screen,
+    soil_water_defaults,
+)
 from .science.routes import weather_coordinates
 
 
@@ -152,18 +158,20 @@ def recommendation(farm, reports=None, *, conditions=None):
     crop = CROP_NAMES.get((farm["crop"] or "").casefold())
     if not crop or not farm["planted"]:
         missing.append("crop")
-    if not farm["settings"] or not fresh(farm, "measured_at", timedelta(hours=36)):
-        missing.append("measurements")
     evidence = live_conditions(farm) if conditions is None else conditions
-    forecast = evidence["forecast"]
+    forecast = evidence.get("forecast")
     if not forecast:
         missing.append("weather")
     evidence = {**evidence, "missing": missing}
     if missing:
         return evidence
-    settings = IrrigationSettings.model_validate(farm["settings"])
+    # Soil-water parameters default to FAO-56 values derived from crop and soil when the
+    # officer has not saved a measured record, so advice does not wait on manual entry.
+    settings = (IrrigationSettings.model_validate(farm["settings"]) if farm["settings"]
+                else IrrigationSettings(**soil_water_defaults(crop, farm["soil"])))
     water_source = farm["source"].casefold()
-    if ("canal" in water_source and not settings.canal) or ("tubewell" in water_source and not settings.tubewell):
+    needs_supply = "canal" in water_source or "tubewell" in water_source
+    if needs_supply and not (settings.canal or settings.tubewell):
         return {**evidence, "missing": ["supply"]}
     if not any(crop_stage(crop, farm["planted"], date.fromisoformat(row["date"])) not in
                ("Pre-planting", "Beyond modeled season") for row in forecast["daily"]):
@@ -195,8 +203,9 @@ def recommendation(farm, reports=None, *, conditions=None):
         "requires_review": review, "pump": pump_metrics(first["pump_m3"], settings),
         "canal": settings.canal.model_dump(mode="json") if settings.canal else None,
         "canal_use_hours": round(first["canal_m3"] / settings.canal.flow_m3_hour, 2) if settings.canal else None,
-        "farm_inputs": {"area_m2": farm["area_m2"], "soil": farm["soil"], "settings": farm["settings"],
-                        "measured_at": farm["measured_at"].isoformat()},
+        "farm_inputs": {"area_m2": farm["area_m2"], "soil": farm["soil"],
+                        "settings": settings.model_dump(mode="json"),
+                        "measured_at": farm["measured_at"].isoformat() if farm["measured_at"] else None},
     }
 
 

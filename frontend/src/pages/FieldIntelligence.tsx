@@ -14,6 +14,7 @@ import {
 } from "@/features/irrigation/DailyWaterBalance";
 type Settings = {
   measured_at?: string | null;
+  derived?: boolean;
   taw_mm: number;
   initial_depletion_mm: number;
   allowable_depletion: number;
@@ -33,14 +34,6 @@ type Settings = {
       pkr_per_unit: number;
     } | null;
   } | null;
-};
-type Scenario = {
-  rain_factor: number;
-  canal_delay_days: number;
-  pump_pkr_hour: number | null;
-  canal_supply_factor: number;
-  pump_available_from: string | null;
-  pump_hours_cap: number | null;
 };
 
 const errorText = (error: unknown) =>
@@ -84,11 +77,12 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   const [settingsStatus, setSettingsStatus] = useState("Loading settings…");
   const [settingsAttempt, setSettingsAttempt] = useState(0);
   const [loadingSettings, setLoadingSettings] = useState(true);
-  const [scenarioStatus, setScenarioStatus] = useState("");
+  const [planStatus, setPlanStatus] = useState("");
+  const [planAttempt, setPlanAttempt] = useState(0);
   const [pumpFuel, setPumpFuel] = useState<"direct" | "electricity" | "diesel">("direct");
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>();
-  const [scenario, setScenario] = useState<Scenario>();
   const [decisionStatus, setDecisionStatus] = useState("");
   const canal = field.source.toLowerCase().includes("canal");
   const tubewell = field.source.toLowerCase().includes("tubewell");
@@ -113,36 +107,37 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     };
   }, [path, settingsAttempt]);
 
+  // The backend runs the recommended plan automatically on the baseline forecast.
+  // Officers no longer enter scenario assumptions; they review the modeled result.
   useEffect(() => {
-    if (!scenario || busy) return;
-    let controller: AbortController | undefined;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible" || controller) return;
-      controller = new AbortController();
-      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(35_000)]);
-      void request<Result>(`${path}/simulate`, "POST", scenario, signal)
+    if (!settings) return;
+    const controller = new AbortController();
+    const load = () => {
+      setPlanStatus("Calculating the recommended plan…");
+      request<Result>(`${path}/simulate`, "POST", {}, controller.signal)
         .then((fresh) => {
-          if (!signal.aborted) {
+          if (!controller.signal.aborted) {
             setResult(fresh);
-            setScenarioStatus("");
+            setPlanStatus("");
           }
         })
         .catch((error) => {
-          if (!controller?.signal.aborted) {
-            setScenarioStatus(
-              "Forecast refresh failed. The last calculated plan is shown. " + errorText(error),
-            );
+          if (!controller.signal.aborted) {
+            setResult(undefined);
+            setPlanStatus(errorText(error));
           }
-        })
-        .finally(() => {
-          controller = undefined;
         });
+    };
+    load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !busy) load();
     }, 300_000);
     return () => {
+      controller.abort();
       window.clearInterval(timer);
-      controller?.abort();
     };
-  }, [path, scenario, busy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, Boolean(settings), planAttempt]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -150,15 +145,7 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
     const n = (key: string) => Number(values.get(key));
     const firstDate = String(values.get("canal_date") ?? "");
     const salinity = String(values.get("soil_ece") ?? "");
-    const data: Settings = {
-      taw_mm: n("taw"),
-      initial_depletion_mm: n("depletion"),
-      allowable_depletion: n("allowable"),
-      efficiency: n("efficiency"),
-      surface_taw_mm: n("surface_taw"),
-      surface_raw_mm: n("surface_raw"),
-      initial_surface_depletion_mm: n("surface_depletion"),
-      soil_ece_ds_m: salinity === "" ? null : Number(salinity),
+    const data: Record<string, unknown> = {
       canal:
         canal && firstDate
           ? {
@@ -185,48 +172,30 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
             }
           : null,
     };
+    // Soil-water parameters are only sent when the officer opens Advanced to override the
+    // derived FAO-56 defaults; otherwise the backend derives them from crop and soil.
+    if (advanced) {
+      data.taw_mm = n("taw");
+      data.initial_depletion_mm = n("depletion");
+      data.allowable_depletion = n("allowable");
+      data.efficiency = n("efficiency");
+      data.surface_taw_mm = n("surface_taw");
+      data.surface_raw_mm = n("surface_raw");
+      data.initial_surface_depletion_mm = n("surface_depletion");
+      data.soil_ece_ds_m = salinity === "" ? null : Number(salinity);
+    }
     setBusy(true);
     setSettingsStatus("");
-    setResult(undefined);
-    setScenario(undefined);
     try {
-      const measurement = String(values.get("measured_at") ?? "");
+      const measurement = advanced ? String(values.get("measured_at") ?? "") : "";
       const query = measurement
         ? "?" + new URLSearchParams({ measured_at: new Date(measurement + "+05:00").toISOString() })
         : "";
       setSettings(await request<Settings>(`${path}/irrigation-settings${query}`, "PUT", data));
-      setSettingsStatus("Irrigation settings saved.");
+      setSettingsStatus("Water supply saved.");
+      setPlanAttempt((attempt) => attempt + 1);
     } catch (error) {
       setSettingsStatus(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function run(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    const price = String(values.get("price"));
-    const hours = String(values.get("pump_cap"));
-    const input: Scenario = {
-      rain_factor: Number(values.get("rain")),
-      canal_delay_days: Number(values.get("delay")),
-      pump_pkr_hour: price === "" ? null : Number(price),
-      canal_supply_factor: Number(values.get("canal_fraction")) / 100,
-      pump_available_from: String(values.get("pump_from")) || null,
-      pump_hours_cap: hours === "" ? null : Number(hours),
-    };
-    setBusy(true);
-    setResult(undefined);
-    setScenario(undefined);
-    setDecisionStatus("");
-    setScenarioStatus("Running scenario…");
-    try {
-      setResult(await request<Result>(`${path}/simulate`, "POST", input));
-      setScenario(input);
-      setScenarioStatus("");
-    } catch (error) {
-      setScenarioStatus(errorText(error));
     } finally {
       setBusy(false);
     }
@@ -250,72 +219,16 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
   return (
     <>
       <Card
-        title="Field inputs and water supply"
-        subtitle="Use the field's measured water storage, current depletion and available supply."
+        title="Water supply"
+        subtitle="Record the canal turn or tubewell. Soil-water values are derived from the crop and soil."
       >
         {settings !== undefined && (
           <form onSubmit={save}>
-            <div className="form-grid">
-              <Numeric
-                name="taw"
-                label="Root-zone total available water (mm)"
-                value={settings?.taw_mm}
-                min={0.1}
-                max={1200}
-              />
-              <Numeric
-                name="depletion"
-                label="Current root-zone depletion (mm)"
-                value={settings?.initial_depletion_mm}
-              />
-              <Numeric
-                name="allowable"
-                label="Allowable depletion fraction"
-                value={settings?.allowable_depletion ?? 0.5}
-                min={0.01}
-                max={0.99}
-              />
-              <Numeric
-                name="efficiency"
-                label="Application efficiency (fraction)"
-                value={settings?.efficiency}
-                min={0.01}
-                max={1}
-              />
-              <Numeric
-                name="surface_taw"
-                label="Total evaporable surface water (mm)"
-                value={settings?.surface_taw_mm ?? 20}
-                min={0.1}
-                max={80}
-              />
-              <Numeric
-                name="surface_raw"
-                label="Readily evaporable surface water (mm)"
-                value={settings?.surface_raw_mm ?? 8}
-              />
-              <Numeric
-                name="surface_depletion"
-                label="Current surface depletion (mm)"
-                value={settings?.initial_surface_depletion_mm}
-              />
-              <label>
-                Soil-water measurement time (PKT)
-                <input name="measured_at" type="datetime-local" />
-                <small>
-                  {settings?.measured_at
-                    ? "Last recorded " + formatWeatherTime(settings.measured_at) + " PKT"
-                    : "Record this when measuring depletion for automatic advisories."}
-                </small>
-              </label>
-              <Numeric
-                name="soil_ece"
-                label="Lab root-zone soil salinity ECe (dS/m)"
-                value={settings?.soil_ece_ds_m ?? undefined}
-                max={100}
-                required={false}
-              />
-            </div>
+            {!canal && !tubewell && (
+              <p role="status">
+                This field is registered as rain-fed, so there is no canal or tubewell to configure.
+              </p>
+            )}
             {canal && (
               <fieldset className="form-grid">
                 <legend>Warabandi turn</legend>
@@ -415,14 +328,92 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
                     />
                   </>
                 )}
-                {settings?.tubewell && (
-                  <small>Saved pumping cost {show(settings.tubewell.pkr_hour)} PKR/hour</small>
-                )}
               </fieldset>
             )}
+            <label className="checkbox-line">
+              <input
+                type="checkbox"
+                checked={advanced}
+                onChange={(event) => setAdvanced(event.target.checked)}
+              />
+              Advanced: override the derived FAO-56 soil-water values
+            </label>
+            {advanced && (
+              <div className="form-grid">
+                <Numeric
+                  name="taw"
+                  label="Root-zone total available water (mm)"
+                  value={settings?.taw_mm}
+                  min={0.1}
+                  max={1200}
+                  required={false}
+                />
+                <Numeric
+                  name="depletion"
+                  label="Current root-zone depletion (mm)"
+                  value={settings?.initial_depletion_mm}
+                  required={false}
+                />
+                <Numeric
+                  name="allowable"
+                  label="Allowable depletion fraction"
+                  value={settings?.allowable_depletion ?? 0.5}
+                  min={0.01}
+                  max={0.99}
+                  required={false}
+                />
+                <Numeric
+                  name="efficiency"
+                  label="Application efficiency (fraction)"
+                  value={settings?.efficiency}
+                  min={0.01}
+                  max={1}
+                  required={false}
+                />
+                <Numeric
+                  name="surface_taw"
+                  label="Total evaporable surface water (mm)"
+                  value={settings?.surface_taw_mm ?? 20}
+                  min={0.1}
+                  max={80}
+                  required={false}
+                />
+                <Numeric
+                  name="surface_raw"
+                  label="Readily evaporable surface water (mm)"
+                  value={settings?.surface_raw_mm ?? 8}
+                  required={false}
+                />
+                <Numeric
+                  name="surface_depletion"
+                  label="Current surface depletion (mm)"
+                  value={settings?.initial_surface_depletion_mm}
+                  required={false}
+                />
+                <label>
+                  Soil-water measurement time (PKT)
+                  <input name="measured_at" type="datetime-local" />
+                  <small>
+                    {settings?.measured_at
+                      ? "Last recorded " + formatWeatherTime(settings.measured_at) + " PKT"
+                      : "Record this when you physically measure depletion."}
+                  </small>
+                </label>
+                <Numeric
+                  name="soil_ece"
+                  label="Lab root-zone soil salinity ECe (dS/m)"
+                  value={settings?.soil_ece_ds_m ?? undefined}
+                  max={100}
+                  required={false}
+                />
+              </div>
+            )}
             <Button type="submit" disabled={busy}>
-              Save field inputs
+              Save water supply
             </Button>
+            {settings?.derived && !advanced && (
+              <small>Soil-water values are modeled FAO-56 defaults from the crop and soil type.</small>
+            )}
           </form>
         )}
         {settingsStatus && <p role="status">{settingsStatus}</p>}
@@ -434,99 +425,65 @@ function FieldIrrigation({ path, field }: { path: string; field: Field }) {
               setSettingsAttempt((attempt) => attempt + 1);
             }}
           >
-            Retry loading field inputs
+            Retry loading water supply
           </Button>
         )}
       </Card>
       <CropProgress key={path} path={path} />
       <CropLifecycle path={path} />
       <Card
-        title="Irrigation scenarios"
-        subtitle={`${field.crop} · ${field.stage} · Uses available forecast days`}
+        title="Recommended irrigation plan"
+        subtitle={
+          result
+            ? `${result.recommended} · ${result.weather_source} forecast ${formatWeatherTime(result.weather_retrieved_at)} PKT`
+            : `${field.crop} · ${field.stage}`
+        }
       >
-        <p>
-          Compare crop water balance and pumping cost using the forecast and field measurements.
-        </p>
-        <form className="form-grid" onSubmit={run}>
-          <Numeric name="rain" label="Forecast rainfall multiplier" value={1} max={3} />
-          <Numeric name="delay" label="Canal delay (days)" value={0} max={60} step={1} />
-          <Numeric
-            name="canal_fraction"
-            label="Available canal allocation (%)"
-            value={100}
-            max={100}
-          />
-          <label>
-            Tubewell available from
-            <input name="pump_from" type="date" />
-          </label>
-          <Numeric name="pump_cap" label="Tubewell limit (hours/day)" max={24} required={false} />
-          <Numeric name="price" label="Override pumping cost (PKR/hour)" required={false} />
-          <Button type="submit" variant="primary" disabled={busy || !settings}>
-            Run scenario
-          </Button>
-        </form>
-        {scenarioStatus && <p role="status">{scenarioStatus}</p>}
-      </Card>
-      {result && (
-        <Card
-          title={`Recommended plan · ${result.recommended}`}
-          subtitle={`${result.weather_source} forecast retrieved ${formatWeatherTime(result.weather_retrieved_at)} PKT · Readily available water ${show(result.readily_available_mm)} mm`}
-        >
-          {result.weather_fallback_reason && (
-            <p>Weather fallback · {result.weather_fallback_reason}</p>
-          )}
-          {result.soil_inputs_source && (
-            <p>
-              {result.soil_inputs_source} ·{" "}
-              {result.soil_measured_at
-                ? `Measurement recorded ${formatWeatherTime(result.soil_measured_at)} PKT`
-                : "Measurement time unrecorded"}
-            </p>
-          )}
-          {result.warnings.map((warning) => (
-            <p role="status" key={warning}>
-              {warning}
-            </p>
-          ))}
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Strategy</th>
-                  <th>Pumping cost (PKR)</th>
-                  <th>Stress score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(result.plans).map(([name, plan]) => (
-                  <tr key={name}>
-                    <td>{name}</td>
-                    <td>{show(plan.cost_pkr)}</td>
-                    <td>{show(plan.stress_score)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <DailyWaterBalance
-            result={result}
-            busy={busy}
-            canReview={Boolean(
-              scenario &&
-              !scenarioStatus &&
-              scenario.rain_factor === 1 &&
-              scenario.canal_delay_days === 0 &&
-              scenario.pump_pkr_hour == null &&
-              scenario.canal_supply_factor === 1 &&
-              scenario.pump_available_from == null &&
-              scenario.pump_hours_cap == null,
+        {planStatus ? (
+          <p role="status">{planStatus}</p>
+        ) : result ? (
+          <>
+            {result.weather_fallback_reason && (
+              <p>Weather fallback · {result.weather_fallback_reason}</p>
             )}
-            onDecision={decide}
-          />
-          {decisionStatus && <p role="status">{decisionStatus}</p>}
-        </Card>
-      )}
+            {result.soil_inputs_source && <p>{result.soil_inputs_source}</p>}
+            {result.warnings.map((warning) => (
+              <p role="status" key={warning}>
+                {warning}
+              </p>
+            ))}
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th>Pumping cost (PKR)</th>
+                    <th>Stress score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(result.plans).map(([name, plan]) => (
+                    <tr key={name}>
+                      <td>{name}</td>
+                      <td>{show(plan.cost_pkr)}</td>
+                      <td>{show(plan.stress_score)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <DailyWaterBalance
+              result={result}
+              busy={busy}
+              canReview={!planStatus}
+              onDecision={decide}
+            />
+            {decisionStatus && <p role="status">{decisionStatus}</p>}
+          </>
+        ) : (
+          <p role="status">Loading the recommended plan…</p>
+        )}
+      </Card>
     </>
   );
 }
