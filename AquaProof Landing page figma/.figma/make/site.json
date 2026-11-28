@@ -1,0 +1,11 @@
+{
+  "title": "AquaProof Pakistan",
+  "description": "AquaProof helps agricultural officers map fields, send advisories and record farmer replies. Follow a wheat field near Multan to see how better timing could avoid unnecessary pumping.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
